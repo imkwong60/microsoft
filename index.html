@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#090d18">
+  <meta name="description" content="離線優先的 OneDrive 檔案管理工具">
+  <title>雲端檔案 — OneDrive</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" href="./icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="stylesheet" href="./style.css">
+  <script src="./authConfig.js" defer></script>
+  <script src="./ui.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="主要導覽">
+      <a class="brand" href="./" aria-label="雲端檔案首頁">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><path d="M12.1 24.9h12.3a5.1 5.1 0 0 0 .4-10.2 8.7 8.7 0 0 0-16.5-1.6 6 6 0 0 0 3.8 11.8Z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="m13.3 18.3 3-3 3 3m-3-3v7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span class="brand-copy"><strong>雲端檔案</strong><small>PERSONAL DRIVE</small></span>
+      </a>
+
+      <div class="sidebar-label">工作區</div>
+      <nav class="side-nav">
+        <button class="side-link active" type="button" data-view="all">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5zM4 10h16M10 10v10"/></svg>
+          <span>所有檔案</span><span class="nav-count" id="fileCount">—</span>
+        </button>
+        <button class="side-link" type="button" data-view="folders">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h5l2 2h7A1.5 1.5 0 0 1 20.5 9v9A1.5 1.5 0 0 1 19 19.5H5A1.5 1.5 0 0 1 3.5 18z"/></svg>
+          <span>資料夾</span>
+        </button>
+        <button class="side-link" type="button" data-view="recent">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/></svg>
+          <span>最近檔案</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-label storage-label">儲存空間</div>
+      <div class="storage-card glass">
+        <div class="storage-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16M6.5 4.5h11A2.5 2.5 0 0 1 20 7v10a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17V7a2.5 2.5 0 0 1 2.5-2.5Z"/><path d="M16 14h.01"/></svg></div>
+        <div class="storage-heading"><strong>OneDrive</strong><span>雲端儲存空間</span></div>
+        <div class="storage-meter"><span></span></div>
+        <p>檔案安全儲存於你的 Microsoft 帳戶</p>
+      </div>
+
+      <div class="sidebar-bottom">
+        <div class="connection-indicator"><i id="connectionDot"></i><span id="connectionText">檢查連線中</span></div>
+        <button class="account-card" id="accountButton" type="button">
+          <span class="avatar" id="accountAvatar">?</span>
+          <span class="account-copy"><strong id="accountName">尚未登入</strong><small id="accountEmail">連結 Microsoft 帳戶</small></span>
+          <svg class="account-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+    <main class="main-panel">
+      <header class="topbar">
+        <button class="icon-button mobile-menu" id="menuButton" type="button" aria-label="開啟導覽選單">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <div class="breadcrumbs"><span>我的雲端空間</span><span class="breadcrumb-divider">/</span><strong id="breadcrumbCurrent" role="button" tabindex="0">所有檔案</strong></div>
+        <div class="topbar-actions">
+          <span class="online-badge"><i id="onlineDot"></i><span id="onlineLabel">線上</span></span>
+          <button class="icon-button" id="refreshButton" type="button" aria-label="重新整理檔案" title="重新整理">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 9a6.5 6.5 0 0 1 10.8-2L20 12M4 12l3.1 5a6.5 6.5 0 0 0 10.8-2"/></svg>
+          </button>
+          <button class="button button-primary top-upload" id="topUploadButton" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>
+            <span>上傳檔案</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="content-scroll">
+        <section class="welcome-row">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-line"></span>你的私人雲端空間</div>
+            <h1 id="pageTitle">所有檔案<span class="title-period">.</span></h1>
+            <p class="page-description" id="pageDescription">整理、管理你的檔案，隨時隨地安心存取。</p>
+          </div>
+          <div class="welcome-art" aria-hidden="true"><div class="orb orb-one"></div><div class="orb orb-two"></div><div class="art-cloud"><svg viewBox="0 0 88 64"><path d="M27 51h36a14 14 0 0 0 1-28A22 22 0 0 0 22 20a16 16 0 0 0 5 31Z" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="m34 34 8-8 8 8m-8-8v20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
+        </section>
+
+        <section class="overview-grid" aria-label="檔案概覽">
+          <article class="overview-card glass">
+            <div class="overview-top"><span class="overview-icon icon-blue"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5h9l5 5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v5h5M8 14h8m-8 3h6"/></svg></span><span class="overview-trend">雲端同步</span></div>
+            <div class="overview-value" id="overviewFiles">—</div><div class="overview-caption">檔案與資料夾</div>
+          </article>
+          <article class="overview-card glass">
+            <div class="overview-top"><span class="overview-icon icon-violet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16M6.5 4.5h11A2.5 2.5 0 0 1 20 7v10a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17V7a2.5 2.5 0 0 1 2.5-2.5Z"/><path d="M16 14h.01"/></svg></span><span class="overview-trend neutral">OneDrive</span></div>
+            <div class="overview-value" id="overviewStorage">—</div><div class="overview-caption">目前檢視的檔案大小</div>
+          </article>
+          <article class="overview-card overview-sync-card glass">
+            <div class="overview-top"><span class="overview-icon icon-green"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 9a6.5 6.5 0 0 1 10.8-2L20 12M4 12l3.1 5a6.5 6.5 0 0 0 10.8-2"/></svg></span><span class="overview-trend" id="syncStatus">準備就緒</span></div>
+            <div class="overview-value sync-value" id="overviewSync">已同步</div><div class="overview-caption" id="overviewSyncCaption">檔案會安全儲存至 OneDrive</div>
+          </article>
+        </section>
+
+        <section class="files-section">
+          <div class="section-heading">
+            <div><h2>瀏覽檔案</h2><p id="fileSummary">連結帳戶以開始使用</p></div>
+            <label class="search-box">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4 4"/></svg>
+              <input id="searchInput" type="search" placeholder="搜尋檔案…" autocomplete="off" aria-label="搜尋檔案">
+              <kbd>/</kbd>
+            </label>
+          </div>
+          <div class="files-toolbar">
+            <div class="pill-nav" role="tablist" aria-label="檔案篩選">
+              <button class="pill-tab active" type="button" role="tab" aria-selected="true" data-filter="all">全部 <span id="allTabCount">—</span></button>
+              <button class="pill-tab" type="button" role="tab" aria-selected="false" data-filter="files">檔案</button>
+              <button class="pill-tab" type="button" role="tab" aria-selected="false" data-filter="folders">資料夾</button>
+            </div>
+            <button class="sort-button" id="sortButton" type="button" aria-label="切換排序方式">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h8M8 18h4M4 4v16m0 0-2.5-2.5M4 20l2.5-2.5"/></svg>
+              <span>名稱排序</span>
+            </button>
+          </div>
+          <div class="files-grid" id="fileGrid" aria-live="polite"></div>
+          <div class="empty-state" id="emptyState" hidden>
+            <div class="empty-illustration"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M11 18a4 4 0 0 1 4-4h13l6 6h15a4 4 0 0 1 4 4v24a4 4 0 0 1-4 4H15a4 4 0 0 1-4-4z"/><path d="M11 27h42"/></svg></div>
+            <h3 id="emptyTitle">雲端空間準備好了</h3>
+            <p id="emptyDescription">登入 Microsoft 帳戶，開始瀏覽你的 OneDrive 檔案。</p>
+            <button class="button button-primary" id="emptyAction" type="button">連結 Microsoft 帳戶</button>
+          </div>
+          <div class="loading-state" id="loadingState" hidden><span class="spinner"></span><span>正在讀取你的雲端檔案…</span></div>
+        </section>
+        <footer class="page-footer"><span>你的檔案，只屬於你。</span><span><i></i>安全連線至 Microsoft OneDrive</span></footer>
+      </div>
+    </main>
+  </div>
+
+  <div class="mobile-bottom-bar">
+    <button class="mobile-nav-item active" type="button" data-view="all"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5zM4 10h16M10 10v10"/></svg><span>檔案</span></button>
+    <button class="mobile-nav-item" type="button" data-view="folders"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h5l2 2h7A1.5 1.5 0 0 1 20.5 9v9A1.5 1.5 0 0 1 19 19.5H5A1.5 1.5 0 0 1 3.5 18z"/></svg><span>資料夾</span></button>
+    <button class="mobile-nav-item" type="button" data-view="recent"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/></svg><span>最近</span></button>
+    <button class="mobile-nav-item" id="mobileAccountButton" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></svg><span>帳戶</span></button>
+  </div>
+  <button class="mobile-fab button button-primary" id="mobileUploadButton" type="button" aria-label="上傳檔案"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg></button>
+
+  <input id="filePicker" type="file" multiple hidden>
+  <div class="modal-backdrop" id="uploadModal" aria-hidden="true">
+    <section class="modal glass" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <button class="modal-close icon-button" id="closeModalButton" type="button" aria-label="關閉視窗"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+      <div class="modal-kicker"><span class="modal-kicker-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg></span>安全上傳</div>
+      <h2 id="modalTitle">新增至雲端</h2>
+      <p class="modal-description">選擇檔案上傳至目前的 OneDrive 資料夾。離線時會先安全保存在此裝置。</p>
+      <button class="dropzone" id="dropzone" type="button">
+        <span class="dropzone-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg></span>
+        <strong>點擊選取，或拖曳檔案到這裡</strong>
+        <span>支援任意檔案類型</span>
+      </button>
+      <div class="selected-files" id="selectedFiles" hidden></div>
+      <div class="modal-actions"><button class="button button-quiet" id="cancelUploadButton" type="button">取消</button><button class="button button-primary" id="confirmUploadButton" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg><span>開始上傳</span></button></div>
+      <p class="modal-footnote"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3"/></svg>傳輸由 Microsoft OneDrive 保護</p>
+    </section>
+  </div>
+  <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="false"></div>
+</body>
+</html>
