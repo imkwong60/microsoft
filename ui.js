@@ -262,14 +262,9 @@
         state: request.state,
         createdAt: Date.now()
       }));
-      const authWindow = window.open(request.url, "_blank", "popup,width=520,height=720");
-      if (!authWindow) {
-        localStorage.removeItem(AUTH_FLOW_KEY);
-        showToast("登入視窗遭到封鎖，請允許此網站開啟彈出視窗後重試。", "error", 4000);
-        return;
-      }
+      // 使用同一個視窗導向，避免 popup + postMessage 失敗導致主視窗不知道已登入
       preparedAuthRequest = null;
-      prepareAuthorizationRequest();
+      window.location.href = request.url;
     } catch (error) {
       localStorage.removeItem(AUTH_FLOW_KEY);
       console.error("Google 登入初始化失敗:", error);
@@ -1238,6 +1233,23 @@
       showToast("已切換至離線模式，已快取的檔案清單仍可瀏覽。", "info");
       loadFiles({ cachedOnly: true });
     });
+    // 視窗重新取得焦點時，檢查是否已有 token（防止登入後狀態沒更新）
+    window.addEventListener("focus", () => {
+      if (!state.account) {
+        const tokens = getTokens();
+        if (tokens.accessToken || tokens.refreshToken) {
+          completeExternalSignIn();
+        }
+      }
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && !state.account) {
+        const tokens = getTokens();
+        if (tokens.accessToken || tokens.refreshToken) {
+          completeExternalSignIn();
+        }
+      }
+    });
   }
 
   async function initialize() {
@@ -1258,6 +1270,7 @@
         callbackError = error;
         console.error("Google OAuth 登入失敗:", error);
       }
+      // 如果是從舊的 popup 流程回來，通知 opener 後關閉
       if (window.opener && window.opener !== window) {
         try {
           window.opener.postMessage({
@@ -1271,10 +1284,11 @@
         window.close();
         return;
       }
-      if (completedLogin) {
-        showToast("Google 登入已完成。若原 App 尚未連結，請返回 App。", "info", 6000);
+      // 同一個視窗導向回來（新流程）
+      if (callbackError) {
+        showToast(callbackError.message || "Google 登入失敗。", "error", 4500);
       }
-      if (callbackError) showToast(callbackError.message || "Google 登入失敗。", "error", 4500);
+      // completedLogin 成功時，後面會自動呼叫 showAccount
     }
 
     try {
