@@ -347,3 +347,55 @@ h1 { margin: 14px 0 7px; font-size: clamp(29px, 3.2vw, 39px); font-weight: 610; 
   .preview-stage { max-height: calc(82dvh - 140px); }
   .preview-stage img { max-height: calc(82dvh - 155px); }
 }
+
+@media (max-width: 760px) {
+  .eyebrow { font-size: 11px; }
+  .breadcrumbs { font-size: 12px; }
+  .online-badge { font-size: 11px; }
+  .top-upload { min-height: 40px; padding: 0 15px; font-size: 12px; }
+  .page-description { font-size: 13px; }
+  .overview-trend { font-size: 10px; }
+  .overview-caption { font-size: 11px; }
+  .section-heading h2 { font-size: 17px; }
+  .section-heading p { font-size: 12px; }
+  .search-box { height: 40px; }
+  .search-box input { font-size: 16px; }
+  .pill-tab { min-height: 35px; padding-right: 13px; padding-left: 13px; font-size: 12px; }
+  .pill-tab span { font-size: 10px; }
+  .sort-button { font-size: 11px; }
+  .file-card { min-height: 72px; gap: 10px; padding: 10px; }
+  .file-icon { flex-basis: 36px; width: 36px; height: 36px; }
+  .file-name { font-size: 12px; }
+  .file-meta { font-size: 11px; }
+  .file-action { flex-basis: 28px; width: 28px; height: 28px; }
+  .file-action svg { width: 15px; height: 15px; }
+  .page-footer { font-size: 11px; }
+  .mobile-nav-item { font-size: 11px; }
+  .modal-description { font-size: 12px; }
+  .dropzone strong { font-size: 12px; }
+  .dropzone > span:last-child { font-size: 11px; }
+  .share-help { font-size: 10px; }
+  .selected-file { font-size: 11px; }
+  .progress-label { font-size: 11px; }
+  .progress-detail { font-size: 10px; }
+  .modal-footnote { font-size: 9px; }
+  .toast { font-size: 12px; }
+  .sidebar-label { font-size: 11px; }
+  .side-link span:nth-child(2) { font-size: 13px; }
+  .nav-count { font-size: 11px; }
+  .storage-heading strong { font-size: 12px; }
+  .storage-heading span, .storage-card p { font-size: 10px; }
+  .connection-indicator { font-size: 11px; }
+  .account-copy strong { font-size: 11px; }
+  .account-copy small { font-size: 10px; }
+  .empty-state h3 { font-size: 16px; }
+  .empty-state p { font-size: 12px; }
+  .loading-state { font-size: 12px; }
+}
+
+@media (max-width: 470px) {
+  .search-box { width: 45%; }
+  .search-box input { font-size: 16px; }
+  .sort-button { font-size: 10px; }
+  .pill-tab { padding-right: 11px; padding-left: 11px; }
+}
