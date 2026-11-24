@@ -1,14 +1,14 @@
 (() => {
   "use strict";
 
-  const config = window.ONEDRIVE_CONFIG;
-  const TOKEN_KEY = "onedrive.oauth.tokens";
-  const SESSION_TOKEN_KEY = "onedrive.oauth.tokens";
-  const AUTH_FLOW_KEY = "onedrive.oauth.flow";
-  const QUEUE_DB = "onedrive-offline-queue";
-  const SIMPLE_UPLOAD_LIMIT = 250 * 1024 * 1024;
-  const UPLOAD_CHUNK_SIZE = 10 * 1024 * 1024;
+  const config = window.GDRIVE_CONFIG;
+  const TOKEN_KEY = "gdrive.oauth.tokens";
+  const AUTH_FLOW_KEY = "gdrive.oauth.flow";
+  const QUEUE_DB = "gdrive-offline-queue";
+  const SIMPLE_UPLOAD_LIMIT = 5 * 1024 * 1024; // Google simple upload recommended < 5MB
+  const UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;   // resumable chunk
   const UPLOAD_RETRY_LIMIT = 3;
+
   const state = {
     account: null,
     items: [],
@@ -25,6 +25,7 @@
     previewUrl: null,
     previewRequestId: 0
   };
+
   const $ = (selector) => document.querySelector(selector);
   const elements = {
     fileGrid: $("#fileGrid"),
@@ -58,12 +59,14 @@
     previewCaption: $("#previewCaption"),
     toastRegion: $("#toastRegion")
   };
+
   let selectedFiles = [];
   let toastId = 0;
   let preparedAuthRequest = null;
   let authPreparationPending = false;
   let authPreparationError = null;
 
+  // ─── Toast ───────────────────────────────────────────────
   function showToast(message, type = "success", duration = 2800) {
     const toast = document.createElement("div");
     const icon = document.createElement("span");
@@ -96,6 +99,7 @@
     window.setTimeout(() => toast.remove(), 260);
   }
 
+  // ─── IndexedDB offline queue ────────────────────────────
   function openDatabase() {
     return new Promise((resolve, reject) => {
       const request = indexedDB.open(QUEUE_DB, 1);
@@ -158,16 +162,11 @@
     return queueTransaction("readwrite", (store) => store.delete(id));
   }
 
+  // ─── Token storage ──────────────────────────────────────
   function getTokens() {
     try {
-      const savedTokens = localStorage.getItem(TOKEN_KEY);
-      if (savedTokens) return JSON.parse(savedTokens);
-      const legacyTokens = sessionStorage.getItem(SESSION_TOKEN_KEY);
-      if (!legacyTokens) return {};
-      const tokens = JSON.parse(legacyTokens);
-      localStorage.setItem(TOKEN_KEY, legacyTokens);
-      sessionStorage.removeItem(SESSION_TOKEN_KEY);
-      return tokens;
+      const saved = localStorage.getItem(TOKEN_KEY);
+      return saved ? JSON.parse(saved) : {};
     } catch (error) {
       console.error("無法讀取登入狀態:", error);
       return {};
@@ -180,7 +179,6 @@
 
   function clearTokens() {
     localStorage.removeItem(TOKEN_KEY);
-    sessionStorage.removeItem(SESSION_TOKEN_KEY);
   }
 
   function clearExpiredAuthFlow() {
@@ -190,19 +188,15 @@
         localStorage.removeItem(AUTH_FLOW_KEY);
       }
     } catch (error) {
-      console.warn("無法清除過期的登入驗證狀態:", error);
-      try {
-        localStorage.removeItem(AUTH_FLOW_KEY);
-      } catch (removeError) {
-        console.error("無法移除登入驗證狀態:", removeError);
-      }
+      try { localStorage.removeItem(AUTH_FLOW_KEY); } catch (_) {}
     }
   }
 
+  // ─── PKCE helpers ───────────────────────────────────────
   function randomString(length) {
     const bytes = new Uint8Array(length);
     crypto.getRandomValues(bytes);
-    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   }
 
   function base64UrlEncode(buffer) {
@@ -220,16 +214,18 @@
     const verifier = randomString(48);
     const challenge = await createCodeChallenge(verifier);
     const oauthState = randomString(24);
-    const authorizeUrl = new URL(config.authority + "/oauth2/v2.0/authorize");
+    const authorizeUrl = new URL(config.authEndpoint);
     authorizeUrl.search = new URLSearchParams({
       client_id: config.clientId,
       response_type: "code",
       redirect_uri: config.redirectUri,
-      response_mode: "query",
       scope: config.scopes.join(" "),
       code_challenge: challenge,
       code_challenge_method: "S256",
-      state: oauthState
+      state: oauthState,
+      access_type: "offline",   // 取得 refresh_token
+      prompt: "consent",        // 第一次強制同意以拿到 refresh
+      include_granted_scopes: "true"
     }).toString();
     return { verifier, state: oauthState, url: authorizeUrl.toString() };
   }
@@ -242,14 +238,14 @@
       .then((request) => { preparedAuthRequest = request; })
       .catch((error) => {
         authPreparationError = error;
-        console.error("Microsoft 登入初始化失敗:", error);
+        console.error("Google 登入初始化失敗:", error);
       })
       .finally(() => { authPreparationPending = false; });
   }
 
   function signIn() {
     if (!navigator.onLine) {
-      showToast("目前離線，連線後即可登入 Microsoft 帳戶。", "info");
+      showToast("目前離線，連線後即可登入 Google 帳戶。", "info");
       return;
     }
     if (!preparedAuthRequest) {
@@ -276,8 +272,8 @@
       prepareAuthorizationRequest();
     } catch (error) {
       localStorage.removeItem(AUTH_FLOW_KEY);
-      console.error("Microsoft 登入初始化失敗:", error);
-      showToast("無法開始 Microsoft 登入，請稍後再試。", "error");
+      console.error("Google 登入初始化失敗:", error);
+      showToast("無法開始 Google 登入，請稍後再試。", "error");
     }
   }
 
@@ -287,30 +283,28 @@
     const returnedState = params.get("state");
     const oauthError = params.get("error");
     if (!code && !oauthError) return false;
+
     window.history.replaceState({}, document.title, window.location.pathname + window.location.hash);
+
     let authFlow = null;
     try {
       authFlow = JSON.parse(localStorage.getItem(AUTH_FLOW_KEY) || "null");
     } catch (error) {
       console.error("無法讀取登入驗證狀態:", error);
     }
-    const expectedState = authFlow && authFlow.state
-      ? authFlow.state
-      : sessionStorage.getItem("onedrive.oauth.state");
-    const verifier = authFlow && authFlow.verifier
-      ? authFlow.verifier
-      : sessionStorage.getItem("onedrive.oauth.verifier");
+    const expectedState = authFlow && authFlow.state;
+    const verifier = authFlow && authFlow.verifier;
     localStorage.removeItem(AUTH_FLOW_KEY);
-    sessionStorage.removeItem("onedrive.oauth.state");
-    sessionStorage.removeItem("onedrive.oauth.verifier");
+
     if (!expectedState || returnedState !== expectedState || !verifier) {
       throw new Error("登入驗證未通過，請重新登入。");
     }
     if (oauthError) {
       const description = params.get("error_description");
-      throw new Error(description || "Microsoft 登入已取消或失敗");
+      throw new Error(description || "Google 登入已取消或失敗");
     }
-    const response = await fetch(config.authority + "/oauth2/v2.0/token", {
+
+    const response = await fetch(config.tokenEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -318,12 +312,13 @@
         grant_type: "authorization_code",
         code,
         redirect_uri: config.redirectUri,
-        code_verifier: verifier,
-        scope: config.scopes.join(" ")
+        code_verifier: verifier
       })
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error_description || "無法完成 Microsoft 登入");
+    if (!response.ok) {
+      throw new Error(payload.error_description || payload.error || "無法完成 Google 登入");
+    }
     setTokens({
       accessToken: payload.access_token,
       refreshToken: payload.refresh_token || "",
@@ -334,22 +329,20 @@
 
   async function refreshAccessToken() {
     const tokens = getTokens();
-    if (!tokens.refreshToken) throw new Error("登入已逾期，請重新連結 Microsoft 帳戶。");
-    const response = await fetch(config.authority + "/oauth2/v2.0/token", {
+    if (!tokens.refreshToken) throw new Error("登入已逾期，請重新連結 Google 帳戶。");
+    const response = await fetch(config.tokenEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         client_id: config.clientId,
         grant_type: "refresh_token",
-        refresh_token: tokens.refreshToken,
-        redirect_uri: config.redirectUri,
-        scope: config.scopes.join(" ")
+        refresh_token: tokens.refreshToken
       })
     });
     const payload = await response.json();
     if (!response.ok) {
       clearTokens();
-      throw new Error(payload.error_description || "登入已逾期，請重新連結 Microsoft 帳戶。");
+      throw new Error(payload.error_description || payload.error || "登入已逾期，請重新連結 Google 帳戶。");
     }
     setTokens({
       accessToken: payload.access_token,
@@ -367,30 +360,31 @@
     return refreshAccessToken();
   }
 
-  async function graphRequest(path, options = {}, retried = false) {
+  // ─── Google Drive API helpers ───────────────────────────
+  async function driveRequest(path, options = {}, retried = false) {
     const accessToken = await getAccessToken();
     const headers = new Headers(options.headers || {});
     headers.set("Authorization", "Bearer " + accessToken);
-    const response = await fetch("https://graph.microsoft.com/v1.0/" + path, { ...options, headers });
+    // Drive v3
+    const url = path.startsWith("http") ? path : "https://www.googleapis.com/drive/v3/" + path;
+    const response = await fetch(url, { ...options, headers });
     if (response.status === 401 && !retried) {
       await getAccessToken(true);
-      return graphRequest(path, options, true);
+      return driveRequest(path, options, true);
     }
     if (!response.ok) {
-      let message = "OneDrive 請求失敗（" + response.status + "）";
+      let message = "Google Drive 請求失敗（" + response.status + "）";
       try {
         const errorPayload = await response.json();
-        message = errorPayload.error && errorPayload.error.message ? errorPayload.error.message : message;
-      } catch (error) {
-        console.warn("無法解析 OneDrive 錯誤回應:", error);
-      }
+        message = (errorPayload.error && errorPayload.error.message) || message;
+      } catch (_) {}
       throw new Error(message);
     }
     return response;
   }
 
   function getCacheKey(folderId) {
-    return "onedrive.snapshot." + (folderId || "root");
+    return "gdrive.snapshot." + (folderId || "root");
   }
 
   function cacheItems(items, folderId) {
@@ -409,7 +403,6 @@
       const snapshot = JSON.parse(localStorage.getItem(getCacheKey(folderId)) || "null");
       return snapshot && Array.isArray(snapshot.items) ? snapshot.items : null;
     } catch (error) {
-      console.error("無法讀取檔案清單快取:", error);
       return null;
     }
   }
@@ -442,16 +435,30 @@
     }
     showLoading(true);
     try {
-      const path = state.folderId
-        ? "me/drive/items/" + encodeURIComponent(state.folderId) + "/children?$select=id,name,size,file,folder,lastModifiedDateTime,webUrl"
-        : "me/drive/root/children?$select=id,name,size,file,folder,lastModifiedDateTime,webUrl";
-      const response = await graphRequest(path);
+      // Build query: children of folder (or root) that are not trashed
+      const parent = state.folderId || "root";
+      const q = `'${parent}' in parents and trashed = false`;
+      const fields = "files(id,name,mimeType,size,modifiedTime,webViewLink,iconLink,thumbnailLink,parents)";
+      const path = `files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent(fields)}&pageSize=200&orderBy=folder,name`;
+      const response = await driveRequest(path);
       const data = await response.json();
-      state.items = Array.isArray(data.value) ? data.value : [];
+      // Normalize to similar shape as OneDrive for UI reuse
+      state.items = (Array.isArray(data.files) ? data.files : []).map((f) => ({
+        id: f.id,
+        name: f.name,
+        size: Number(f.size) || 0,
+        mimeType: f.mimeType,
+        folder: f.mimeType === "application/vnd.google-apps.folder",
+        file: f.mimeType !== "application/vnd.google-apps.folder",
+        lastModifiedDateTime: f.modifiedTime,
+        webUrl: f.webViewLink,
+        thumbnailLink: f.thumbnailLink,
+        iconLink: f.iconLink
+      }));
       cacheItems(state.items, state.folderId);
       renderFiles();
     } catch (error) {
-      console.error("讀取 OneDrive 檔案失敗:", error);
+      console.error("讀取 Google Drive 檔案失敗:", error);
       const cached = readCachedItems(state.folderId);
       if (cached) {
         state.items = cached;
@@ -460,7 +467,7 @@
       } else {
         state.items = [];
         renderFiles();
-        showToast(error.message || "讀取 OneDrive 檔案失敗。", "error", 4000);
+        showToast(error.message || "讀取 Google Drive 檔案失敗。", "error", 4000);
       }
     } finally {
       showLoading(false);
@@ -482,26 +489,38 @@
   }
 
   function formatDate(dateString) {
-    if (!dateString) return "OneDrive";
+    if (!dateString) return "Google Drive";
     const date = new Date(dateString);
-    if (Number.isNaN(date.getTime())) return "OneDrive";
+    if (Number.isNaN(date.getTime())) return "Google Drive";
     return new Intl.DateTimeFormat("zh-Hant", { month: "short", day: "numeric" }).format(date);
   }
 
   function iconFor(item) {
     if (item.folder) return { type: "folder", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h5l2 2h7A1.5 1.5 0 0 1 20.5 9v9A1.5 1.5 0 0 1 19 19.5H5A1.5 1.5 0 0 1 3.5 18z"/></svg>' };
     const ext = (item.name || "").split(".").pop().toLowerCase();
-    if (["jpg", "jpeg", "png", "gif", "webp", "svg", "heic"].includes(ext)) return { type: "image", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m4 17 5-5 3.5 3 2-2 5.5 5"/></svg>' };
-    if (ext === "pdf") return { type: "pdf", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4M8 16h2a1.5 1.5 0 0 0 0-3H8v5m5-5v5h1.2a2.5 2.5 0 0 0 0-5z"/></svg>' };
-    if (["doc", "docx", "txt", "rtf", "odt"].includes(ext)) return { type: "document", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4M8 12h7m-7 3h7m-7 3h4"/></svg>' };
-    if (["xls", "xlsx", "csv", "ods"].includes(ext)) return { type: "spreadsheet", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4M8 12h7m-7 3h7m-7 3h7M11 11.5v7"/></svg>' };
-    if (["ppt", "pptx", "odp"].includes(ext)) return { type: "presentation", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4M8 17v-5h2.5a1.5 1.5 0 0 1 0 3H8"/></svg>' };
-    if (["zip", "rar", "7z", "gz", "tar"].includes(ext)) return { type: "archive", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4M11 9v2m0 2v2m0 2v2m-1-7h2m-2 4h2"/></svg>' };
+    if (["jpg", "jpeg", "png", "gif", "webp", "svg", "heic"].includes(ext) || (item.mimeType || "").startsWith("image/")) {
+      return { type: "image", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m4 17 5-5 3.5 3 2-2 5.5 5"/></svg>' };
+    }
+    if (ext === "pdf" || item.mimeType === "application/pdf") {
+      return { type: "pdf", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4M8 16h2a1.5 1.5 0 0 0 0-3H8v5m5-5v5h1.2a2.5 2.5 0 0 0 0-5z"/></svg>' };
+    }
+    if (["doc", "docx", "txt", "rtf", "odt"].includes(ext) || (item.mimeType || "").includes("document")) {
+      return { type: "document", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4M8 12h7m-7 3h7m-7 3h4"/></svg>' };
+    }
+    if (["xls", "xlsx", "csv", "ods"].includes(ext) || (item.mimeType || "").includes("spreadsheet")) {
+      return { type: "spreadsheet", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4M8 12h7m-7 3h7m-7 3h7M11 11.5v7"/></svg>' };
+    }
+    if (["ppt", "pptx", "odp"].includes(ext) || (item.mimeType || "").includes("presentation")) {
+      return { type: "presentation", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4M8 17v-5h2.5a1.5 1.5 0 0 1 0 3H8"/></svg>' };
+    }
+    if (["zip", "rar", "7z", "gz", "tar"].includes(ext)) {
+      return { type: "archive", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4M11 9v2m0 2v2m0 2v2m-1-7h2m-2 4h2"/></svg>' };
+    }
     return { type: "generic", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4"/></svg>' };
   }
 
   function isImageFile(item) {
-    const mimeType = item.file && item.file.mimeType ? item.file.mimeType : "";
+    const mimeType = item.mimeType || "";
     const extension = (item.name || "").split(".").pop().toLowerCase();
     return mimeType.startsWith("image/") || ["jpg", "jpeg", "png", "gif", "webp", "svg", "heic", "bmp", "tif", "tiff"].includes(extension);
   }
@@ -592,7 +611,7 @@
       : state.view === "folders"
         ? "快速找到並整理你的雲端資料夾。"
         : state.view === "recent"
-          ? "查看最近更新的 OneDrive 檔案。"
+          ? "查看最近更新的 Google Drive 檔案。"
           : "整理、管理你的檔案，隨時隨地安心存取。";
   }
 
@@ -610,100 +629,99 @@
     if (searchTerm) files = files.filter((item) => item.name.toLocaleLowerCase().includes(searchTerm));
 
     elements.fileGrid.replaceChildren();
-    const pendingHere = state.pending.filter((file) => file.folderId === state.folderId);
+    const pendingHere = state.pending.filter((file) => (file.folderId || null) === (state.folderId || null));
     pendingHere.forEach((file, index) => elements.fileGrid.append(createFileCard(file, index, true)));
-    files.forEach((item, index) => elements.fileGrid.append(createFileCard(item, index + pendingHere.length)));
-    elements.emptyState.hidden = files.length > 0 || pendingHere.length > 0 || state.isLoading;
-    elements.fileGrid.hidden = state.isLoading;
-    elements.fileSummary.textContent = state.account
-      ? (files.length + pendingHere.length) + " 個項目" + (pendingHere.length ? " · " + pendingHere.length + " 項待上傳" : "")
-      : pendingHere.length
-        ? pendingHere.length + " 個檔案等待登入後上傳"
-        : "連結帳戶以開始使用";
-    elements.fileCount.textContent = String(state.items.length);
-    elements.allTabCount.textContent = String(state.items.length);
-    elements.overviewFiles.textContent = String(state.items.length + pendingHere.length);
-    const total = state.items.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
-    elements.overviewStorage.textContent = formatBytes(total);
-    elements.overviewSync.textContent = pendingHere.length ? "待同步 " + pendingHere.length : "已同步";
-    elements.overviewSyncCaption.textContent = pendingHere.length
-      ? "檔案會在連線後自動上傳"
-      : "檔案會安全儲存至 OneDrive";
-    elements.syncStatus.textContent = pendingHere.length ? "等待同步" : "準備就緒";
-    if (!state.account) {
-      $("#emptyTitle").textContent = "雲端空間準備好了";
-      $("#emptyDescription").textContent = "登入 Microsoft 帳戶，開始瀏覽你的 OneDrive 檔案。";
-      $("#emptyAction").textContent = "連結 Microsoft 帳戶";
-    } else if (pendingHere.length === 0 && files.length === 0 && searchTerm) {
-      $("#emptyTitle").textContent = "找不到符合的檔案";
-      $("#emptyDescription").textContent = "試試其他關鍵字，或清除搜尋內容。";
-      $("#emptyAction").hidden = true;
-    } else if (pendingHere.length === 0 && files.length === 0) {
-      $("#emptyTitle").textContent = "這裡還沒有檔案";
-      $("#emptyDescription").textContent = "上傳第一個檔案，或切換到其他資料夾。";
-      $("#emptyAction").textContent = "上傳檔案";
-      $("#emptyAction").hidden = false;
+    files.forEach((item, index) => elements.fileGrid.append(createFileCard(item, pendingHere.length + index)));
+
+    const totalCount = state.items.length + pendingHere.length;
+    elements.fileCount.textContent = totalCount || "—";
+    elements.allTabCount.textContent = totalCount || "—";
+    elements.overviewFiles.textContent = totalCount || "—";
+    const totalSize = state.items.reduce((sum, item) => sum + (Number(item.size) || 0), 0);
+    elements.overviewStorage.textContent = totalSize ? formatBytes(totalSize) : "—";
+
+    if (state.account) {
+      elements.overviewSync.textContent = navigator.onLine ? "已同步" : "離線";
+      elements.overviewSyncCaption.textContent = navigator.onLine
+        ? "檔案會安全儲存至 Google Drive"
+        : "目前離線，顯示快取清單";
+      elements.syncStatus.textContent = navigator.onLine ? "準備就緒" : "離線";
+      elements.fileSummary.textContent = files.length
+        ? `顯示 ${files.length} 個項目`
+        : (searchTerm ? "找不到符合的檔案" : "此資料夾是空的");
     } else {
-      $("#emptyAction").hidden = false;
+      elements.overviewSync.textContent = "未登入";
+      elements.overviewSyncCaption.textContent = "連結 Google 帳戶後開始使用";
+      elements.syncStatus.textContent = "尚未連線";
+      elements.fileSummary.textContent = "連結帳戶以開始使用";
+    }
+
+    const showEmpty = !state.isLoading && files.length === 0 && pendingHere.length === 0;
+    elements.emptyState.hidden = !showEmpty;
+    elements.fileGrid.hidden = showEmpty || state.isLoading;
+    if (showEmpty) {
+      if (!state.account) {
+        elements.emptyTitle.textContent = "雲端空間準備好了";
+        elements.emptyDescription.textContent = "登入 Google 帳戶，開始瀏覽你的 Google Drive 檔案。";
+        elements.emptyAction.textContent = "連結 Google 帳戶";
+      } else {
+        elements.emptyTitle.textContent = "此資料夾是空的";
+        elements.emptyDescription.textContent = "上傳檔案或建立資料夾來開始整理。";
+        elements.emptyAction.textContent = "上傳檔案";
+      }
     }
   }
 
   async function downloadFile(item) {
     if (!navigator.onLine) {
-      showToast("下載檔案需要網路連線。", "info");
+      showToast("離線狀態無法下載，請先連線。", "info");
       return;
     }
     try {
-      const response = await graphRequest("me/drive/items/" + encodeURIComponent(item.id) + "/content");
+      showToast("正在準備下載「" + item.name + "」…", "info", 2000);
+      const response = await driveRequest(`files/${encodeURIComponent(item.id)}?alt=media`);
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = item.name;
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 30000);
-      showToast("已開始下載「" + item.name + "」。");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = item.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast("「" + item.name + "」已開始下載。");
     } catch (error) {
-      console.error("下載 OneDrive 檔案失敗:", error);
-      showToast(error.message || "下載檔案失敗。", "error", 4000);
+      console.error("下載失敗:", error);
+      showToast("下載失敗：" + error.message, "error");
     }
   }
 
   async function openImagePreview(item) {
-    if (!navigator.onLine || !state.account) {
-      showToast("相片預覽需要連線至 OneDrive。", "info");
-      return;
-    }
     state.previewItem = item;
-    const requestId = ++state.previewRequestId;
-    if (state.previewUrl) {
-      URL.revokeObjectURL(state.previewUrl);
-      state.previewUrl = null;
-    }
-    elements.previewImage.removeAttribute("src");
-    $("#previewTitle").textContent = item.name;
-    elements.previewCaption.textContent = formatBytes(item.size) + " · " + formatDate(item.lastModifiedDateTime);
+    state.previewRequestId += 1;
+    const requestId = state.previewRequestId;
+    elements.previewCaption.textContent = item.name;
     elements.previewImage.hidden = true;
     elements.previewSpinner.hidden = false;
     elements.imagePreviewModal.classList.add("open");
     elements.imagePreviewModal.setAttribute("aria-hidden", "false");
     document.body.classList.add("modal-open");
     try {
-      const itemPath = "me/drive/items/" + encodeURIComponent(item.id);
-      let response;
-      try {
-        response = await graphRequest(itemPath + "/thumbnails/0/medium/content");
-      } catch (error) {
-        response = await graphRequest(itemPath + "/content");
-      }
-      let blob = await response.blob();
-      if (!blob.type.startsWith("image/")) {
-        response = await graphRequest(itemPath + "/content");
+      // Prefer thumbnail if available (faster), otherwise full content
+      let blob;
+      if (item.thumbnailLink) {
+        // thumbnailLink often needs auth header for private files
+        const response = await driveRequest(item.thumbnailLink.replace(/=s\d+$/, "=s800"));
+        blob = await response.blob();
+      } else {
+        const response = await driveRequest(`files/${encodeURIComponent(item.id)}?alt=media`);
         blob = await response.blob();
       }
-      if (!blob.type.startsWith("image/")) throw new Error("OneDrive 沒有回傳可預覽的相片格式。");
+      if (!blob.type.startsWith("image/")) {
+        const response = await driveRequest(`files/${encodeURIComponent(item.id)}?alt=media`);
+        blob = await response.blob();
+      }
+      if (!blob.type.startsWith("image/")) throw new Error("無法預覽此格式。");
       if (requestId !== state.previewRequestId) return;
       state.previewUrl = URL.createObjectURL(blob);
       elements.previewImage.alt = item.name;
@@ -757,96 +775,70 @@
     elements.dropzone.setAttribute("aria-disabled", String(disabled));
   }
 
-  async function createUploadSession(file, folderId) {
-    const encodedName = encodeURIComponent(file.name);
-    const path = folderId
-      ? "me/drive/items/" + encodeURIComponent(folderId) + ":/" + encodedName + ":/createUploadSession"
-      : "me/drive/root:/" + encodedName + ":/createUploadSession";
-    const response = await graphRequest(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        item: {
-          "@microsoft.graph.conflictBehavior": "rename",
-          name: file.name
-        }
-      })
-    });
-    const session = await response.json();
-    if (!session.uploadUrl) throw new Error("OneDrive 沒有回傳分段上傳網址。");
-    return session.uploadUrl;
-  }
-
-  function expectedOffset(session) {
-    const range = session.nextExpectedRanges && session.nextExpectedRanges[0];
-    if (!range) return null;
-    const offset = Number.parseInt(range.split("-")[0], 10);
-    return Number.isFinite(offset) ? offset : null;
-  }
-
-  async function getUploadSessionOffset(uploadUrl) {
-    const response = await fetch(uploadUrl);
-    if (!response.ok) {
-      throw new Error(response.status === 404 || response.status === 410
-        ? "OneDrive 上傳工作階段已過期，請重新選取檔案上傳。"
-        : "無法恢復 OneDrive 上傳工作階段（" + response.status + "）。");
-    }
-    const session = await response.json();
-    return expectedOffset(session);
-  }
-
+  // Resumable upload for larger files
   async function uploadLargeFile(file, folderId, onProgress) {
-    const uploadUrl = await createUploadSession(file, folderId);
+    // 1. Initiate resumable session
+    const metadata = {
+      name: file.name,
+      parents: folderId ? [folderId] : undefined
+    };
+    const initResponse = await driveRequest("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": file.type || "application/octet-stream",
+        "X-Upload-Content-Length": String(file.size)
+      },
+      body: JSON.stringify(metadata)
+    });
+    const uploadUrl = initResponse.headers.get("Location");
+    if (!uploadUrl) throw new Error("Google Drive 沒有回傳分段上傳網址。");
+
+    // 2. Upload chunks
     let offset = 0;
     while (offset < file.size) {
       const end = Math.min(offset + UPLOAD_CHUNK_SIZE, file.size);
       let attempts = 0;
       while (true) {
         try {
+          const chunk = file.slice(offset, end);
           const response = await fetch(uploadUrl, {
             method: "PUT",
-            headers: { "Content-Range": "bytes " + offset + "-" + (end - 1) + "/" + file.size },
-            body: file.slice(offset, end)
+            headers: {
+              "Content-Length": String(end - offset),
+              "Content-Range": `bytes ${offset}-${end - 1}/${file.size}`
+            },
+            body: chunk
           });
-          if (response.status === 202) {
-            const session = await response.json();
-            offset = expectedOffset(session);
-            if (offset === null) offset = end;
+          if (response.status === 308) {
+            // Incomplete – continue
+            const range = response.headers.get("Range");
+            if (range) {
+              const match = range.match(/bytes=0-(\d+)/);
+              if (match) offset = Number(match[1]) + 1;
+              else offset = end;
+            } else {
+              offset = end;
+            }
             onProgress(offset);
             break;
           }
           if (response.ok) {
             onProgress(file.size);
-            return response.status === 204 ? null : response.json().catch(() => null);
+            return response.json().catch(() => null);
           }
-          let message = "OneDrive 分段上傳失敗（" + response.status + "）";
+          let message = "Google Drive 分段上傳失敗（" + response.status + "）";
           try {
             const payload = await response.json();
             if (payload.error && payload.error.message) message = payload.error.message;
-          } catch (error) {
-            console.warn("無法解析分段上傳錯誤:", error);
-          }
-          if (response.status === 404 || response.status === 410) throw new Error("OneDrive 上傳工作階段已過期，請重新選取檔案上傳。");
+          } catch (_) {}
           throw new Error(message);
         } catch (error) {
-          if (error.message.includes("工作階段已過期")) throw error;
           if (!navigator.onLine) throw new Error("網路中斷；目前檔案的分段上傳未完成，請連線後重新選取檔案再試。");
           attempts += 1;
           if (attempts > UPLOAD_RETRY_LIMIT) throw error;
-          updateUploadProgress(file.name, offset / file.size * 100, "連線中斷，正在嘗試恢復第 " + (attempts) + " 次…");
-          await new Promise((resolve) => window.setTimeout(resolve, attempts * 900));
-          try {
-            const serverOffset = await getUploadSessionOffset(uploadUrl);
-            if (serverOffset !== null) {
-              offset = serverOffset;
-              onProgress(offset);
-              if (offset >= file.size) return null;
-              if (offset >= end) break;
-            }
-          } catch (resumeError) {
-            if (resumeError.message.includes("工作階段已過期")) throw resumeError;
-            if (attempts >= UPLOAD_RETRY_LIMIT) throw resumeError;
-          }
+          updateUploadProgress(file.name, (offset / file.size) * 100, "連線中斷，正在嘗試恢復第 " + attempts + " 次…");
+          await new Promise((r) => setTimeout(r, attempts * 900));
         }
       }
     }
@@ -856,18 +848,41 @@
   async function uploadFile(file, folderId, onProgress) {
     if (file.size > SIMPLE_UPLOAD_LIMIT) {
       return uploadLargeFile(file, folderId, (uploadedBytes) => {
-        onProgress(uploadedBytes / file.size * 100, formatBytes(uploadedBytes) + " / " + formatBytes(file.size));
+        onProgress((uploadedBytes / file.size) * 100, formatBytes(uploadedBytes) + " / " + formatBytes(file.size));
       });
     }
-    const encodedName = encodeURIComponent(file.name);
-    const path = folderId
-      ? "me/drive/items/" + encodeURIComponent(folderId) + ":/" + encodedName + ":/content"
-      : "me/drive/root:/" + encodedName + ":/content";
-    const response = await graphRequest(path, {
-      method: "PUT",
-      headers: { "Content-Type": file.type || "application/octet-stream" },
-      body: file
-    });
+    // Simple multipart upload
+    const metadata = {
+      name: file.name,
+      parents: folderId ? [folderId] : undefined
+    };
+    const boundary = "-------gdriveboundary" + Date.now();
+    const delimiter = "\r\n--" + boundary + "\r\n";
+    const closeDelimiter = "\r\n--" + boundary + "--";
+    const metaPart = delimiter +
+      "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
+      JSON.stringify(metadata);
+    const mediaPart = delimiter +
+      "Content-Type: " + (file.type || "application/octet-stream") + "\r\n\r\n";
+
+    // Build body as Blob for efficiency
+    const body = new Blob([
+      metaPart,
+      mediaPart,
+      file,
+      closeDelimiter
+    ]);
+
+    const response = await driveRequest(
+      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "multipart/related; boundary=" + boundary
+        },
+        body
+      }
+    );
     onProgress(100, formatBytes(file.size) + " / " + formatBytes(file.size));
     return response.json().catch(() => null);
   }
@@ -886,7 +901,7 @@
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
         try {
-          updateUploadProgress(file.name, 0, "正在建立安全的 OneDrive 上傳工作階段…");
+          updateUploadProgress(file.name, 0, "正在建立安全的 Google Drive 上傳工作階段…");
           await uploadFile(file, state.folderId, (percent, detail) => {
             const totalPercent = ((index + percent / 100) / files.length) * 100;
             updateUploadProgress(file.name, totalPercent, detail);
@@ -894,7 +909,7 @@
           completed += 1;
           selectedFiles = selectedFiles.filter((selected) => selected !== file);
           renderSelectedFiles();
-          showToast("「" + file.name + "」已上傳至 OneDrive。");
+          showToast("「" + file.name + "」已上傳至 Google Drive。");
         } catch (error) {
           console.error("上傳檔案失敗:", file.name, error);
           failed.push(file);
@@ -905,7 +920,7 @@
       renderSelectedFiles();
       if (completed > 0) await loadFiles();
       if (failed.length === 0) {
-        updateUploadProgress("上傳完成", 100, "所有檔案已安全儲存至 OneDrive。");
+        updateUploadProgress("上傳完成", 100, "所有檔案已安全儲存至 Google Drive。");
         window.setTimeout(() => {
           if (!state.uploadingFromModal) elements.uploadProgress.hidden = true;
         }, 1200);
@@ -944,7 +959,7 @@
           });
           await removeQueuedUpload(upload.id);
           state.pending = state.pending.filter((file) => file.id !== upload.id);
-          showToast("「" + upload.name + "」已上傳至 OneDrive。");
+          showToast("「" + upload.name + "」已上傳至 Google Drive。");
           renderFiles();
         } catch (error) {
           console.error("上傳檔案失敗:", upload.name, error);
@@ -966,7 +981,7 @@
     if (!files.length) return;
     const hasLargeFile = files.some((file) => file.size > SIMPLE_UPLOAD_LIMIT);
     if (hasLargeFile && (!state.account || !navigator.onLine)) {
-      showToast("大檔案需先登入 Microsoft 帳戶並保持網路連線，才能分段上傳。", "error", 4500);
+      showToast("大檔案需先登入 Google 帳戶並保持網路連線，才能分段上傳。", "error", 4500);
       return;
     }
     if (state.account && navigator.onLine) {
@@ -987,7 +1002,7 @@
         showToast("檔案已加入安全上傳佇列。", "info", 2200);
         await uploadQueuedItems();
       } else if (!state.account) {
-        showToast("檔案已保存在此裝置；登入後即可同步至 OneDrive。", "info", 3500);
+        showToast("檔案已保存在此裝置；登入後即可同步至 Google Drive。", "info", 3500);
       } else {
         showToast("目前離線，檔案已安全排入佇列，連線後會自動上傳。", "info", 3500);
       }
@@ -1042,21 +1057,25 @@
 
   async function showAccount(account) {
     state.account = account;
-    const displayName = account.displayName || account.userPrincipalName || "Microsoft 帳戶";
+    const displayName = account.displayName || account.email || "Google 帳戶";
     $("#accountName").textContent = displayName;
-    $("#accountEmail").textContent = account.userPrincipalName || "Microsoft OneDrive";
+    $("#accountEmail").textContent = account.email || "Google Drive";
     $("#accountAvatar").textContent = displayName.trim().charAt(0).toUpperCase();
     renderFiles();
     try {
-      const response = await graphRequest("me?$select=id,displayName,mail,userPrincipalName");
+      // Prefer userinfo endpoint
+      const response = await driveRequest("https://www.googleapis.com/oauth2/v3/userinfo");
       const profile = await response.json();
-      state.account = profile;
-      $("#accountName").textContent = profile.displayName || displayName;
-      $("#accountEmail").textContent = profile.mail || profile.userPrincipalName || "Microsoft OneDrive";
-      $("#accountAvatar").textContent = (profile.displayName || displayName).trim().charAt(0).toUpperCase();
+      state.account = {
+        displayName: profile.name || profile.email,
+        email: profile.email,
+        picture: profile.picture
+      };
+      $("#accountName").textContent = state.account.displayName;
+      $("#accountEmail").textContent = state.account.email || "Google Drive";
+      $("#accountAvatar").textContent = (state.account.displayName || "?").trim().charAt(0).toUpperCase();
     } catch (error) {
-      console.warn("無法載入 Microsoft 帳戶資料:", error);
-      if (!readCachedItems(null) && !navigator.onLine) showToast("離線狀態，請連線以重新驗證 Microsoft 帳戶。", "info");
+      console.warn("無法載入 Google 帳戶資料:", error);
     }
     await loadFiles();
     await uploadQueuedItems();
@@ -1066,8 +1085,8 @@
     if (state.account) return;
     const tokens = getTokens();
     if (!tokens.accessToken && !tokens.refreshToken) return;
-    showToast("Microsoft 帳戶已成功連結。");
-    await showAccount({ displayName: "Microsoft 帳戶" });
+    showToast("Google 帳戶已成功連結。");
+    await showAccount({ displayName: "Google 帳戶" });
   }
 
   async function signOut() {
@@ -1077,10 +1096,10 @@
     state.folderId = null;
     state.folderName = "";
     $("#accountName").textContent = "尚未登入";
-    $("#accountEmail").textContent = "連結 Microsoft 帳戶";
+    $("#accountEmail").textContent = "連結 Google 帳戶";
     $("#accountAvatar").textContent = "?";
     renderFiles();
-    showToast("已從此裝置登出 Microsoft 帳戶。", "info");
+    showToast("已從此裝置登出 Google 帳戶。", "info");
   }
 
   function setView(view) {
@@ -1104,10 +1123,19 @@
       if (event.key === TOKEN_KEY && event.newValue) completeExternalSignIn();
     });
     window.addEventListener("message", (event) => {
-      if (event.origin !== window.location.origin || !event.data || event.data.source !== "onedrive-pwa-auth") return;
+      if (event.origin !== window.location.origin || !event.data || event.data.source !== "gdrive-pwa-auth") return;
       if (event.data.error) {
         showToast(event.data.error, "error", 4500);
         return;
+      }
+      const receivedTokens = event.data.tokens;
+      if (receivedTokens && receivedTokens.accessToken) {
+        try {
+          setTokens(receivedTokens);
+        } catch (error) {
+          showToast("登入已完成，但無法儲存帳戶狀態。", "error", 5000);
+          return;
+        }
       }
       completeExternalSignIn();
     });
@@ -1218,6 +1246,7 @@
     clearExpiredAuthFlow();
     const sharedFiles = new URLSearchParams(window.location.search).get("shared") === "1";
     if (sharedFiles) window.history.replaceState({}, document.title, window.location.pathname + window.location.hash);
+
     const callbackParams = new URLSearchParams(window.location.search);
     const hasOAuthCallback = callbackParams.has("code") || callbackParams.has("error");
     let completedLogin = false;
@@ -1227,38 +1256,42 @@
         completedLogin = await exchangeAuthorizationCode();
       } catch (error) {
         callbackError = error;
-        console.error("Microsoft OAuth 登入失敗:", error);
+        console.error("Google OAuth 登入失敗:", error);
       }
       if (window.opener && window.opener !== window) {
         try {
           window.opener.postMessage({
-            source: "onedrive-pwa-auth",
-            error: callbackError ? callbackError.message : null
+            source: "gdrive-pwa-auth",
+            error: callbackError ? callbackError.message : null,
+            tokens: callbackError ? null : getTokens()
           }, window.location.origin);
         } catch (error) {
-          console.warn("無法通知原本的 OneDrive App 登入結果:", error);
+          console.warn("無法通知原本的 App 登入結果:", error);
         }
         window.close();
         return;
       }
-      if (completedLogin) window.close();
-      if (callbackError) showToast(callbackError.message || "Microsoft 登入失敗。", "error", 4500);
+      if (completedLogin) {
+        showToast("Google 登入已完成。若原 App 尚未連結，請返回 App。", "info", 6000);
+      }
+      if (callbackError) showToast(callbackError.message || "Google 登入失敗。", "error", 4500);
     }
+
     try {
       state.pending = await getQueuedUploads();
     } catch (error) {
       console.error("無法載入待上傳檔案:", error);
-      showToast("無法讀取本機離線佇列：" + error.message, "error", 4000);
     }
+
     const tokens = getTokens();
     if (sharedFiles) {
       showToast(tokens.accessToken || tokens.refreshToken
-        ? "已收到分享檔案，正在準備上傳至 OneDrive。"
-        : "已收到分享檔案；登入後會上傳至 OneDrive。", "info", 3500);
+        ? "已收到分享檔案，正在準備上傳至 Google Drive。"
+        : "已收到分享檔案；登入後會上傳至 Google Drive。", "info", 3500);
     }
     if (tokens.accessToken || tokens.refreshToken) {
-      await showAccount({ displayName: "Microsoft 帳戶" });
-      if (completedLogin) showToast("Microsoft 帳戶已成功連結。");
+      await showAccount({ displayName: "Google 帳戶" });
+      if (completedLogin) showToast("Google 帳戶已成功連結。");
     } else {
       renderFiles();
     }
