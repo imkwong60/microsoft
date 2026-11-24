@@ -337,21 +337,28 @@
     const tokens = getTokens();
     if (!tokens.refreshToken) throw new Error("登入已逾期，請重新連結 Google 帳戶。");
     let response;
+    let payload = {};
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 10000);
     try {
       response = await fetch(config.tokenEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        signal: controller.signal,
         body: new URLSearchParams({
           client_id: config.clientId,
           grant_type: "refresh_token",
           refresh_token: tokens.refreshToken
         })
       });
+      try { payload = await response.json(); } catch (_) {}
     } catch (networkError) {
-      throw new Error("網路尚未就緒，無法更新登入狀態（" + (networkError.message || "網路錯誤") + "）");
+      throw new Error(networkError.name === "AbortError"
+        ? "更新登入狀態逾時，請稍後重試"
+        : "網路尚未就緒，無法更新登入狀態（" + (networkError.message || "網路錯誤") + "）");
+    } finally {
+      window.clearTimeout(timer);
     }
-    let payload = {};
-    try { payload = await response.json(); } catch (_) {}
     if (!response.ok) {
       // 只有 refresh_token 真的失效時才清除登入；暫時性錯誤不要把人登出
       if (payload.error === "invalid_grant") {
@@ -462,15 +469,22 @@
       const fields = "files(id,name,mimeType,size,modifiedTime,webViewLink,iconLink,thumbnailLink,parents)";
       const path = `files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent(fields)}&pageSize=200&orderBy=folder,name`;
       let data;
-      const waits = [800, 2000];
+      const timeouts = [6000, 8000, 12000]; // 每次嘗試的逾時：第一次短，卡住時快點重送
       for (let attempt = 0; ; attempt++) {
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), timeouts[attempt]);
         try {
-          const response = await driveRequest(path);
+          const response = await driveRequest(path, { signal: controller.signal });
           data = await response.json();
           break;
         } catch (err) {
-          if (attempt >= waits.length || !getTokens().refreshToken && !getTokens().accessToken) throw err;
-          await delay(waits[attempt]); // app 剛開啟時網路常未就緒，自動重試
+          const timedOut = err && err.name === "AbortError";
+          if (attempt >= timeouts.length - 1 || (!getTokens().refreshToken && !getTokens().accessToken)) {
+            throw timedOut ? new Error("連線逾時，請檢查網路後按「重新載入」") : err;
+          }
+          if (!timedOut) await delay(800); // 逾時的已等夠久，直接重送
+        } finally {
+          window.clearTimeout(timer);
         }
       }
       if (seq !== loadSeq) return; // 已有較新的載入請求，丟棄這次結果
@@ -1144,8 +1158,15 @@
 
   async function fetchProfile() {
     try {
-      const response = await driveRequest("https://www.googleapis.com/oauth2/v3/userinfo");
-      const profile = await response.json();
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 10000);
+      let profile;
+      try {
+        const response = await driveRequest("https://www.googleapis.com/oauth2/v3/userinfo", { signal: controller.signal });
+        profile = await response.json();
+      } finally {
+        window.clearTimeout(timer);
+      }
       const saved = { displayName: profile.name || profile.email, email: profile.email, picture: profile.picture };
       try { localStorage.setItem(PROFILE_KEY, JSON.stringify(saved)); } catch (_) {}
       profileOk = true;
@@ -1383,6 +1404,10 @@
         if (!profileOk) fetchProfile();
       }
     };
+    window.setInterval(() => {
+      // 保險：若一直停在「連線中」且沒有進行中的請求，主動再讀取一次
+      if (state.account && authKind === "connecting" && !state.isLoading) recover();
+    }, 4000);
     window.addEventListener("online", () => window.setTimeout(recover, 800));
     window.addEventListener("pageshow", recover);
     document.addEventListener("visibilitychange", () => {
