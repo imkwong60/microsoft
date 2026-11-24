@@ -4,6 +4,7 @@
   const config = window.ONEDRIVE_CONFIG;
   const TOKEN_KEY = "onedrive.oauth.tokens";
   const SESSION_TOKEN_KEY = "onedrive.oauth.tokens";
+  const AUTH_FLOW_KEY = "onedrive.oauth.flow";
   const QUEUE_DB = "onedrive-offline-queue";
   const SIMPLE_UPLOAD_LIMIT = 250 * 1024 * 1024;
   const UPLOAD_CHUNK_SIZE = 10 * 1024 * 1024;
@@ -59,6 +60,9 @@
   };
   let selectedFiles = [];
   let toastId = 0;
+  let preparedAuthRequest = null;
+  let authPreparationPending = false;
+  let authPreparationError = null;
 
   function showToast(message, type = "success", duration = 2800) {
     const toast = document.createElement("div");
@@ -179,6 +183,22 @@
     sessionStorage.removeItem(SESSION_TOKEN_KEY);
   }
 
+  function clearExpiredAuthFlow() {
+    try {
+      const authFlow = JSON.parse(localStorage.getItem(AUTH_FLOW_KEY) || "null");
+      if (authFlow && Date.now() - Number(authFlow.createdAt) > 10 * 60 * 1000) {
+        localStorage.removeItem(AUTH_FLOW_KEY);
+      }
+    } catch (error) {
+      console.warn("無法清除過期的登入驗證狀態:", error);
+      try {
+        localStorage.removeItem(AUTH_FLOW_KEY);
+      } catch (removeError) {
+        console.error("無法移除登入驗證狀態:", removeError);
+      }
+    }
+  }
+
   function randomString(length) {
     const bytes = new Uint8Array(length);
     crypto.getRandomValues(bytes);
@@ -196,30 +216,66 @@
     return base64UrlEncode(digest);
   }
 
-  async function signIn() {
+  async function createAuthorizationRequest() {
+    const verifier = randomString(48);
+    const challenge = await createCodeChallenge(verifier);
+    const oauthState = randomString(24);
+    const authorizeUrl = new URL(config.authority + "/oauth2/v2.0/authorize");
+    authorizeUrl.search = new URLSearchParams({
+      client_id: config.clientId,
+      response_type: "code",
+      redirect_uri: config.redirectUri,
+      response_mode: "query",
+      scope: config.scopes.join(" "),
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state: oauthState
+    }).toString();
+    return { verifier, state: oauthState, url: authorizeUrl.toString() };
+  }
+
+  function prepareAuthorizationRequest() {
+    if (authPreparationPending || preparedAuthRequest) return;
+    authPreparationPending = true;
+    authPreparationError = null;
+    createAuthorizationRequest()
+      .then((request) => { preparedAuthRequest = request; })
+      .catch((error) => {
+        authPreparationError = error;
+        console.error("Microsoft 登入初始化失敗:", error);
+      })
+      .finally(() => { authPreparationPending = false; });
+  }
+
+  function signIn() {
     if (!navigator.onLine) {
       showToast("目前離線，連線後即可登入 Microsoft 帳戶。", "info");
       return;
     }
+    if (!preparedAuthRequest) {
+      showToast(authPreparationError
+        ? "登入準備失敗，請重新載入頁面後再試。"
+        : "登入功能正在準備，請稍後再試。", authPreparationError ? "error" : "info");
+      prepareAuthorizationRequest();
+      return;
+    }
+    const request = preparedAuthRequest;
     try {
-      const verifier = randomString(48);
-      const challenge = await createCodeChallenge(verifier);
-      const oauthState = randomString(24);
-      sessionStorage.setItem("onedrive.oauth.verifier", verifier);
-      sessionStorage.setItem("onedrive.oauth.state", oauthState);
-      const authorizeUrl = new URL(config.authority + "/oauth2/v2.0/authorize");
-      authorizeUrl.search = new URLSearchParams({
-        client_id: config.clientId,
-        response_type: "code",
-        redirect_uri: config.redirectUri,
-        response_mode: "query",
-        scope: config.scopes.join(" "),
-        code_challenge: challenge,
-        code_challenge_method: "S256",
-        state: oauthState
-      }).toString();
-      window.location.assign(authorizeUrl.toString());
+      localStorage.setItem(AUTH_FLOW_KEY, JSON.stringify({
+        verifier: request.verifier,
+        state: request.state,
+        createdAt: Date.now()
+      }));
+      const authWindow = window.open(request.url, "_blank", "popup,width=520,height=720");
+      if (!authWindow) {
+        localStorage.removeItem(AUTH_FLOW_KEY);
+        showToast("登入視窗遭到封鎖，請允許此網站開啟彈出視窗後重試。", "error", 4000);
+        return;
+      }
+      preparedAuthRequest = null;
+      prepareAuthorizationRequest();
     } catch (error) {
+      localStorage.removeItem(AUTH_FLOW_KEY);
       console.error("Microsoft 登入初始化失敗:", error);
       showToast("無法開始 Microsoft 登入，請稍後再試。", "error");
     }
@@ -232,16 +288,27 @@
     const oauthError = params.get("error");
     if (!code && !oauthError) return false;
     window.history.replaceState({}, document.title, window.location.pathname + window.location.hash);
-    if (oauthError) {
-      const description = params.get("error_description");
-      throw new Error(description || "Microsoft 登入已取消或失敗");
+    let authFlow = null;
+    try {
+      authFlow = JSON.parse(localStorage.getItem(AUTH_FLOW_KEY) || "null");
+    } catch (error) {
+      console.error("無法讀取登入驗證狀態:", error);
     }
-    const expectedState = sessionStorage.getItem("onedrive.oauth.state");
-    const verifier = sessionStorage.getItem("onedrive.oauth.verifier");
+    const expectedState = authFlow && authFlow.state
+      ? authFlow.state
+      : sessionStorage.getItem("onedrive.oauth.state");
+    const verifier = authFlow && authFlow.verifier
+      ? authFlow.verifier
+      : sessionStorage.getItem("onedrive.oauth.verifier");
+    localStorage.removeItem(AUTH_FLOW_KEY);
     sessionStorage.removeItem("onedrive.oauth.state");
     sessionStorage.removeItem("onedrive.oauth.verifier");
     if (!expectedState || returnedState !== expectedState || !verifier) {
       throw new Error("登入驗證未通過，請重新登入。");
+    }
+    if (oauthError) {
+      const description = params.get("error_description");
+      throw new Error(description || "Microsoft 登入已取消或失敗");
     }
     const response = await fetch(config.authority + "/oauth2/v2.0/token", {
       method: "POST",
@@ -995,6 +1062,14 @@
     await uploadQueuedItems();
   }
 
+  async function completeExternalSignIn() {
+    if (state.account) return;
+    const tokens = getTokens();
+    if (!tokens.accessToken && !tokens.refreshToken) return;
+    showToast("Microsoft 帳戶已成功連結。");
+    await showAccount({ displayName: "Microsoft 帳戶" });
+  }
+
   async function signOut() {
     clearTokens();
     state.account = null;
@@ -1025,6 +1100,17 @@
   }
 
   function bindEvents() {
+    window.addEventListener("storage", (event) => {
+      if (event.key === TOKEN_KEY && event.newValue) completeExternalSignIn();
+    });
+    window.addEventListener("message", (event) => {
+      if (event.origin !== window.location.origin || !event.data || event.data.source !== "onedrive-pwa-auth") return;
+      if (event.data.error) {
+        showToast(event.data.error, "error", 4500);
+        return;
+      }
+      completeExternalSignIn();
+    });
     $("#accountButton").addEventListener("click", () => state.account ? signOut() : signIn());
     $("#mobileAccountButton").addEventListener("click", () => {
       document.body.classList.remove("sidebar-open");
@@ -1129,14 +1215,34 @@
   async function initialize() {
     bindEvents();
     updateConnection();
+    clearExpiredAuthFlow();
     const sharedFiles = new URLSearchParams(window.location.search).get("shared") === "1";
     if (sharedFiles) window.history.replaceState({}, document.title, window.location.pathname + window.location.hash);
-    try {
-      const completedLogin = await exchangeAuthorizationCode();
-      if (completedLogin) showToast("Microsoft 帳戶已成功連結。");
-    } catch (error) {
-      console.error("Microsoft OAuth 登入失敗:", error);
-      showToast(error.message || "Microsoft 登入失敗。", "error", 4500);
+    const callbackParams = new URLSearchParams(window.location.search);
+    const hasOAuthCallback = callbackParams.has("code") || callbackParams.has("error");
+    let completedLogin = false;
+    let callbackError = null;
+    if (hasOAuthCallback) {
+      try {
+        completedLogin = await exchangeAuthorizationCode();
+      } catch (error) {
+        callbackError = error;
+        console.error("Microsoft OAuth 登入失敗:", error);
+      }
+      if (window.opener && window.opener !== window) {
+        try {
+          window.opener.postMessage({
+            source: "onedrive-pwa-auth",
+            error: callbackError ? callbackError.message : null
+          }, window.location.origin);
+        } catch (error) {
+          console.warn("無法通知原本的 OneDrive App 登入結果:", error);
+        }
+        window.close();
+        return;
+      }
+      if (completedLogin) window.close();
+      if (callbackError) showToast(callbackError.message || "Microsoft 登入失敗。", "error", 4500);
     }
     try {
       state.pending = await getQueuedUploads();
@@ -1152,6 +1258,7 @@
     }
     if (tokens.accessToken || tokens.refreshToken) {
       await showAccount({ displayName: "Microsoft 帳戶" });
+      if (completedLogin) showToast("Microsoft 帳戶已成功連結。");
     } else {
       renderFiles();
     }
@@ -1163,5 +1270,6 @@
     }
   }
 
+  prepareAuthorizationRequest();
   initialize();
 })();
