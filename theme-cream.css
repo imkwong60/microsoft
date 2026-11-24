@@ -78,3 +78,9 @@ progress { accent-color: var(--accent); }
   .online-badge { display: none; }
 }
 .signout-modal { max-width: 380px; }
+
+/* 連線狀態 */
+.account-chip.connecting .chip-avatar { background: #c49a3a; }
+.account-chip.connecting .chip-copy strong { color: #9a7420 !important; }
+.account-chip.has-error .chip-avatar { background: #b4432f; }
+.account-chip.has-error .chip-copy strong, .account-chip.has-error .chip-copy small { color: #b4432f !important; }
