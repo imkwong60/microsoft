@@ -1,8 +1,9 @@
-const CACHE_NAME = "gdrive-shell-v2";
+const CACHE_NAME = "gdrive-shell-v4";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./style.css",
+  "./theme-cream.css",
   "./authConfig.js",
   "./ui.js",
   "./manifest.json",
