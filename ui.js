@@ -3,6 +3,7 @@
 
   const config = window.ONEDRIVE_CONFIG;
   const TOKEN_KEY = "onedrive.oauth.tokens";
+  const SESSION_TOKEN_KEY = "onedrive.oauth.tokens";
   const QUEUE_DB = "onedrive-offline-queue";
   const MAX_SIMPLE_UPLOAD = 250 * 1024 * 1024;
   const state = {
@@ -140,7 +141,14 @@
 
   function getTokens() {
     try {
-      return JSON.parse(sessionStorage.getItem(TOKEN_KEY) || "{}");
+      const savedTokens = localStorage.getItem(TOKEN_KEY);
+      if (savedTokens) return JSON.parse(savedTokens);
+      const legacyTokens = sessionStorage.getItem(SESSION_TOKEN_KEY);
+      if (!legacyTokens) return {};
+      const tokens = JSON.parse(legacyTokens);
+      localStorage.setItem(TOKEN_KEY, legacyTokens);
+      sessionStorage.removeItem(SESSION_TOKEN_KEY);
+      return tokens;
     } catch (error) {
       console.error("無法讀取登入狀態:", error);
       return {};
@@ -148,11 +156,12 @@
   }
 
   function setTokens(tokens) {
-    sessionStorage.setItem(TOKEN_KEY, JSON.stringify(tokens));
+    localStorage.setItem(TOKEN_KEY, JSON.stringify(tokens));
   }
 
   function clearTokens() {
-    sessionStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(SESSION_TOKEN_KEY);
   }
 
   function randomString(length) {
