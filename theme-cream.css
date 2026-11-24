@@ -1,0 +1,80 @@
+/* 米白色主題：放在 style.css 之後載入，覆蓋原本的深色配色 */
+:root {
+  color-scheme: light;
+  --cream: #f6f1e7;
+  --cream-deep: #efe8d8;
+  --card: #fbf8f1;
+  --line: #e0d6c2;
+  --ink: #2d2a24;
+  --muted: #6f6a5e;
+  --soft: #8a8473;
+  --accent: #3f6b5a;
+}
+
+html, body { background: var(--cream) !important; color: var(--ink) !important; }
+.app-shell, .main-panel, .content-scroll { background: var(--cream) !important; color: var(--ink) !important; }
+.sidebar { background: var(--cream-deep) !important; border-color: var(--line) !important; }
+.topbar { background: rgba(246, 241, 231, .92) !important; border-color: var(--line) !important; backdrop-filter: blur(10px); }
+
+h1, h2, h3, strong, .file-name, .overview-value, .breadcrumbs strong, .brand-copy strong { color: var(--ink) !important; }
+p, small, .page-description, .file-meta, .overview-caption, .sidebar-label, .breadcrumbs span,
+.brand-copy small, .storage-card p, .storage-heading span, .section-heading p, .eyebrow { color: var(--muted) !important; }
+.side-link, .side-link span, .mobile-nav-item, .mobile-nav-item span { color: var(--muted) !important; }
+.side-link.active, .side-link.active span, .mobile-nav-item.active, .mobile-nav-item.active span { color: var(--accent) !important; }
+.side-link.active, .pill-tab.active { background: rgba(63, 107, 90, .12) !important; }
+svg { stroke: currentColor; }
+
+.glass, .overview-card, .storage-card, .file-card, .modal, .preview-modal, .toast, .account-card {
+  background: var(--card) !important;
+  border: 1px solid var(--line) !important;
+  box-shadow: 0 1px 2px rgba(70, 55, 25, .06), 0 8px 24px rgba(70, 55, 25, .06) !important;
+  backdrop-filter: none !important;
+  color: var(--ink) !important;
+}
+.file-card:hover { border-color: #cdbf9f !important; box-shadow: 0 2px 4px rgba(70,55,25,.08), 0 12px 28px rgba(70,55,25,.10) !important; }
+
+.search-box, .sort-button, .icon-button, .pill-nav, .dropzone, .online-badge, .connection-indicator {
+  background: var(--card) !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+.search-box input { background: transparent !important; color: var(--ink) !important; }
+.search-box input::placeholder { color: var(--soft) !important; }
+.search-box kbd { background: var(--cream-deep) !important; color: var(--muted) !important; border-color: var(--line) !important; }
+.pill-tab { color: var(--muted) !important; }
+.pill-tab.active { color: var(--accent) !important; }
+
+.button-primary, .button-primary * { color: #fff !important; }
+.button-primary { background: var(--accent) !important; border-color: var(--accent) !important; box-shadow: 0 4px 14px rgba(63,107,90,.28) !important; }
+.button-quiet { background: transparent !important; color: var(--ink) !important; border: 1px solid var(--line) !important; }
+.button-danger { background: #b4432f !important; color: #fff !important; border: 1px solid #b4432f !important; }
+
+.modal-backdrop, .sidebar-backdrop { background: rgba(60, 50, 35, .38) !important; }
+.mobile-bottom-bar { background: rgba(246, 241, 231, .96) !important; border-top: 1px solid var(--line) !important; }
+.orb { opacity: .3 !important; }
+.art-cloud { color: var(--accent) !important; }
+.page-footer { color: var(--soft) !important; border-color: var(--line) !important; }
+progress { accent-color: var(--accent); }
+
+/* 帳戶狀態列（頂部） */
+.account-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  max-width: 240px; padding: 4px 12px 4px 4px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 999px;
+  color: var(--ink); cursor: pointer; font: inherit;
+}
+.account-chip .chip-avatar {
+  width: 28px; height: 28px; flex: none; border-radius: 50%;
+  display: grid; place-items: center; font-size: 13px; font-weight: 700;
+  background: var(--soft); color: #fff;
+}
+.account-chip.signed-in .chip-avatar { background: var(--accent); }
+.account-chip .chip-copy { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; text-align: left; }
+.account-chip .chip-copy strong { font-size: 12px; }
+.account-chip.signed-in .chip-copy strong { color: var(--accent) !important; }
+.account-chip .chip-copy small { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 640px) {
+  .account-chip { max-width: 150px; }
+  .online-badge { display: none; }
+}
+.signout-modal { max-width: 380px; }
