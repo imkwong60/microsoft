@@ -221,6 +221,7 @@ h1 { margin: 14px 0 7px; font-size: clamp(29px, 3.2vw, 39px); font-weight: 610; 
 .dropzone-icon svg { width: 19px; height: 19px; }
 .dropzone strong { font-size: 10px; font-weight: 560; }
 .dropzone > span:last-child { margin-top: 6px; color: #7c89a1; font-size: 9px; }
+.share-help { margin: 8px 2px 0; color: #74819a; font-size: 8px; line-height: 1.55; }
 .selected-files { display: grid; gap: 7px; max-height: 115px; margin-top: 12px; overflow: auto; }
 .selected-file { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; color: #bdc9df; border: 1px solid rgba(180,196,232,.08); border-radius: 9px; background: rgba(255,255,255,.025); font-size: 9px; }
 .selected-file span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -228,6 +229,24 @@ h1 { margin: 14px 0 7px; font-size: clamp(29px, 3.2vw, 39px); font-weight: 610; 
 .modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
 .modal-footnote { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 16px 0 0; color: #68758d; font-size: 8px; }
 .modal-footnote svg { width: 12px; height: 12px; }
+.upload-progress { display: grid; gap: 8px; margin-top: 15px; }
+.progress-label { display: flex; justify-content: space-between; gap: 12px; color: #c5d2e9; font-size: 9px; }
+.progress-label span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress-label span:last-child { flex: 0 0 auto; color: #a9c5ff; font-variant-numeric: tabular-nums; }
+.upload-progress progress { width: 100%; height: 5px; overflow: hidden; border: 0; border-radius: var(--radius-pill); background: rgba(255,255,255,.09); appearance: none; }
+.upload-progress progress::-webkit-progress-bar { border-radius: var(--radius-pill); background: rgba(255,255,255,.09); }
+.upload-progress progress::-webkit-progress-value { border-radius: var(--radius-pill); background: linear-gradient(90deg, #789df0, #b2caff); transition: width .18s ease; }
+.upload-progress progress::-moz-progress-bar { border-radius: var(--radius-pill); background: linear-gradient(90deg, #789df0, #b2caff); }
+.progress-detail { color: #8290a8; font-size: 8px; }
+.preview-modal { position: relative; display: flex; flex-direction: column; width: min(100%, 900px); max-height: min(92vh, 900px); padding: 21px; border-radius: 22px; transform: translateY(18px) scale(.98); transition: transform .35s var(--ease); }
+.preview-backdrop.open .preview-modal { transform: translateY(0) scale(1); }
+.preview-modal h2 { margin: 2px 38px 13px 2px; overflow: hidden; font-size: 13px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
+.preview-stage { display: grid; flex: 1; min-height: 160px; max-height: calc(92vh - 135px); place-items: center; overflow: auto; border: 1px solid rgba(180,196,232,.08); border-radius: 13px; background: rgba(3,6,12,.42); }
+.preview-stage img { display: block; max-width: 100%; max-height: calc(92vh - 150px); object-fit: contain; }
+.preview-stage img[hidden] { display: none; }
+.preview-caption { margin: 10px 0 0; color: #8190a8; font-size: 9px; }
+.preview-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+.image-card { cursor: zoom-in; }
 .toast-region { position: fixed; z-index: 80; top: calc(18px + env(safe-area-inset-top)); right: max(20px, env(safe-area-inset-right)); display: grid; gap: 9px; width: min(360px, calc(100vw - 32px)); pointer-events: none; }
 .toast { display: flex; align-items: center; gap: 11px; padding: 12px 14px; color: #e6edfb; border: 1px solid rgba(183,201,240,.2); border-radius: 14px; background: rgba(20,27,44,.88); box-shadow: 0 12px 40px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.05); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); font-size: 10px; pointer-events: auto; animation: toast-in .34s var(--ease) both; }
 .toast.leaving { animation: toast-out .24s ease both; }
@@ -323,4 +342,8 @@ h1 { margin: 14px 0 7px; font-size: clamp(29px, 3.2vw, 39px); font-weight: 610; 
   .page-footer { flex-wrap: wrap; }
   .modal-backdrop { align-items: end; padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); }
   .modal { padding: 25px 19px 21px; border-radius: 21px; }
+  .preview-backdrop { align-items: center; padding: 12px 10px calc(12px + env(safe-area-inset-bottom)); }
+  .preview-modal { max-height: calc(90dvh - env(safe-area-inset-top)); padding: 17px; }
+  .preview-stage { max-height: calc(82dvh - 140px); }
+  .preview-stage img { max-height: calc(82dvh - 155px); }
 }
