@@ -23,7 +23,8 @@
     uploadingFromModal: false,
     previewItem: null,
     previewUrl: null,
-    previewRequestId: 0
+    previewRequestId: 0,
+    loadError: ""
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -322,22 +323,42 @@
     return true;
   }
 
-  async function refreshAccessToken() {
+  let refreshPromise = null;
+
+  function refreshAccessToken() {
+    // 同時多個請求要換 token 時，共用同一次換取，避免互相干擾
+    if (!refreshPromise) {
+      refreshPromise = doRefreshAccessToken().finally(() => { refreshPromise = null; });
+    }
+    return refreshPromise;
+  }
+
+  async function doRefreshAccessToken() {
     const tokens = getTokens();
     if (!tokens.refreshToken) throw new Error("登入已逾期，請重新連結 Google 帳戶。");
-    const response = await fetch(config.tokenEndpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: config.clientId,
-        grant_type: "refresh_token",
-        refresh_token: tokens.refreshToken
-      })
-    });
-    const payload = await response.json();
+    let response;
+    try {
+      response = await fetch(config.tokenEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: config.clientId,
+          grant_type: "refresh_token",
+          refresh_token: tokens.refreshToken
+        })
+      });
+    } catch (networkError) {
+      throw new Error("網路尚未就緒，無法更新登入狀態（" + (networkError.message || "網路錯誤") + "）");
+    }
+    let payload = {};
+    try { payload = await response.json(); } catch (_) {}
     if (!response.ok) {
-      clearTokens();
-      throw new Error(payload.error_description || payload.error || "登入已逾期，請重新連結 Google 帳戶。");
+      // 只有 refresh_token 真的失效時才清除登入；暫時性錯誤不要把人登出
+      if (payload.error === "invalid_grant") {
+        clearTokens();
+        throw new Error("登入已逾期，請重新連結 Google 帳戶。");
+      }
+      throw new Error("更新登入狀態失敗（" + response.status + "）：" + (payload.error_description || payload.error || "伺服器錯誤"));
     }
     setTokens({
       accessToken: payload.access_token,
@@ -432,6 +453,7 @@
       }
       return;
     }
+    lastLoadAt = Date.now();
     showLoading(true);
     try {
       // Build query: children of folder (or root) that are not trashed
@@ -440,17 +462,20 @@
       const fields = "files(id,name,mimeType,size,modifiedTime,webViewLink,iconLink,thumbnailLink,parents)";
       const path = `files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent(fields)}&pageSize=200&orderBy=folder,name`;
       let data;
+      const waits = [800, 2000];
       for (let attempt = 0; ; attempt++) {
         try {
           const response = await driveRequest(path);
           data = await response.json();
           break;
         } catch (err) {
-          if (attempt >= 1) throw err;
-          await delay(700); // 登入後第一次請求偶爾失敗，自動重試一次
+          if (attempt >= waits.length || !getTokens().refreshToken && !getTokens().accessToken) throw err;
+          await delay(waits[attempt]); // app 剛開啟時網路常未就緒，自動重試
         }
       }
       if (seq !== loadSeq) return; // 已有較新的載入請求，丟棄這次結果
+      state.loadError = "";
+      setAuthStatus("ok");
       state.items = (Array.isArray(data.files) ? data.files : []).map((f) => ({
         id: f.id,
         name: f.name,
@@ -468,16 +493,19 @@
     } catch (error) {
       if (seq !== loadSeq) return;
       console.error("讀取 Google Drive 檔案失敗:", error);
-      const cached = readCachedItems(state.folderId);
-      if (cached) {
-        state.items = cached;
-        renderFiles();
-        showToast("同步失敗，已顯示上次同步的檔案。 " + error.message, "error", 4200);
+      state.loadError = error.message || "讀取 Google Drive 檔案失敗";
+      if (getTokens().refreshToken || getTokens().accessToken) {
+        setAuthStatus("error");
       } else {
-        state.items = [];
-        renderFiles();
-        showToast(error.message || "讀取 Google Drive 檔案失敗。", "error", 4000);
+        // 登入真的失效（refresh_token 被撤銷或過期）：回到未登入狀態，讓按鈕可重新登入
+        state.account = null;
+        state.loadError = "";
+        clearProfileUI();
       }
+      const cached = readCachedItems(state.folderId);
+      state.items = cached && cached.length ? cached : [];
+      renderFiles();
+      showToast(state.loadError, "error", 5000);
     } finally {
       if (seq === loadSeq) {
         showLoading(false);
@@ -659,7 +687,7 @@
       elements.syncStatus.textContent = navigator.onLine ? "準備就緒" : "離線";
       elements.fileSummary.textContent = files.length
         ? `顯示 ${files.length} 個項目`
-        : (searchTerm ? "找不到符合的檔案" : "此資料夾是空的");
+        : (state.loadError ? "讀取失敗，請重新載入" : state.isLoading ? "讀取中…" : searchTerm ? "找不到符合的檔案" : "此資料夾是空的");
     } else {
       elements.overviewSync.textContent = "未登入";
       elements.overviewSyncCaption.textContent = "連結 Google 帳戶後開始使用";
@@ -675,6 +703,10 @@
         elements.emptyTitle.textContent = "雲端空間準備好了";
         elements.emptyDescription.textContent = "登入 Google 帳戶，開始瀏覽你的 Google Drive 檔案。";
         elements.emptyAction.textContent = "連結 Google 帳戶";
+      } else if (state.loadError) {
+        elements.emptyTitle.textContent = "暫時無法讀取檔案";
+        elements.emptyDescription.textContent = state.loadError;
+        elements.emptyAction.textContent = "重新載入";
       } else {
         elements.emptyTitle.textContent = "此資料夾是空的";
         elements.emptyDescription.textContent = "上傳檔案或建立資料夾來開始整理。";
@@ -1067,6 +1099,22 @@
   }
 
   const PROFILE_KEY = "gdrive.profile";
+  let authKind = "out";
+  let profileOk = false;
+  let lastLoadAt = 0;
+
+  // 單一來源決定頂部狀態：連線中 / 已登入 / 連線失敗 / 尚未登入
+  function setAuthStatus(kind) {
+    authKind = kind;
+    const chip = $("#accountChip");
+    chip.classList.toggle("signed-in", kind === "ok");
+    chip.classList.toggle("connecting", kind === "connecting");
+    chip.classList.toggle("has-error", kind === "error");
+    $("#chipStatus").textContent = { ok: "已登入", connecting: "連線中…", error: "連線失敗", out: "尚未登入" }[kind];
+    if (kind === "error") $("#chipEmail").textContent = "點此重試";
+    else if (kind === "out") $("#chipEmail").textContent = "—";
+    else if (state.account) $("#chipEmail").textContent = state.account.email || state.account.displayName || "Google 帳戶";
+  }
 
   function readProfile() {
     try { return JSON.parse(localStorage.getItem(PROFILE_KEY) || "null"); } catch (_) { return null; }
@@ -1080,10 +1128,9 @@
     $("#accountEmail").textContent = profile.email || "已登入 Google Drive";
     $("#accountAvatar").textContent = initial;
     $("#chipAvatar").textContent = initial;
-    $("#chipStatus").textContent = "已登入";
-    $("#chipEmail").textContent = profile.email || displayName;
-    $("#accountChip").classList.add("signed-in");
-    $("#accountChip").title = "已登入：" + (profile.email || displayName);
+    if (authKind !== "ok" && authKind !== "error") setAuthStatus("connecting");
+    else setAuthStatus(authKind);
+    $("#accountChip").title = profile.email || displayName;
   }
 
   function clearProfileUI() {
@@ -1091,9 +1138,7 @@
     $("#accountEmail").textContent = "連結 Google 帳戶";
     $("#accountAvatar").textContent = "?";
     $("#chipAvatar").textContent = "?";
-    $("#chipStatus").textContent = "尚未登入";
-    $("#chipEmail").textContent = "—";
-    $("#accountChip").classList.remove("signed-in");
+    setAuthStatus("out");
     $("#accountChip").title = "尚未登入";
   }
 
@@ -1103,6 +1148,7 @@
       const profile = await response.json();
       const saved = { displayName: profile.name || profile.email, email: profile.email, picture: profile.picture };
       try { localStorage.setItem(PROFILE_KEY, JSON.stringify(saved)); } catch (_) {}
+      profileOk = true;
       if (state.account) applyProfile(saved);
     } catch (error) {
       console.warn("無法載入 Google 帳戶資料:", error);
@@ -1114,9 +1160,12 @@
     applyProfile(readProfile() || account);
     renderFiles();
     // 帳戶資料與檔案清單同時載入，不再讓檔案等待帳戶資料
+    profileOk = false;
+    setAuthStatus("connecting");
     const profileTask = fetchProfile();
     await loadFiles();
     await profileTask;
+    if (!profileOk && authKind === "ok") await fetchProfile(); // 檔案已成功，帳戶資料再試一次
     await uploadQueuedItems();
   }
 
@@ -1165,6 +1214,8 @@
     clearTokens();
     try { localStorage.removeItem(PROFILE_KEY); } catch (_) {}
     state.account = null;
+    state.loadError = "";
+    profileOk = false;
     state.items = [];
     state.folderId = null;
     state.folderName = "";
@@ -1215,8 +1266,12 @@
       document.body.classList.remove("sidebar-open");
       state.account ? confirmSignOut() : signIn();
     });
-    $("#accountChip").addEventListener("click", () => state.account ? confirmSignOut() : signIn());
-    $("#emptyAction").addEventListener("click", () => state.account ? openUploadModal() : signIn());
+    $("#accountChip").addEventListener("click", () => {
+      if (!state.account) return signIn();
+      if (authKind === "error") { loadFiles(); fetchProfile(); return; }
+      confirmSignOut();
+    });
+    $("#emptyAction").addEventListener("click", () => state.account ? (state.loadError ? loadFiles() : openUploadModal()) : signIn());
     $("#topUploadButton").addEventListener("click", openUploadModal);
     $("#mobileUploadButton").addEventListener("click", openUploadModal);
     $("#refreshButton").addEventListener("click", () => loadFiles());
@@ -1319,7 +1374,19 @@
         }
       }
     });
+    // 回到 app / 網路恢復時，若上次讀取失敗或清單是空的，自動再讀一次
+    const recover = () => {
+      if (!state.account || state.isLoading || state.isUploading || !navigator.onLine) return;
+      if (Date.now() - lastLoadAt < 3000) return;
+      if (state.loadError || (authKind !== "ok") || state.items.length === 0) {
+        loadFiles();
+        if (!profileOk) fetchProfile();
+      }
+    };
+    window.addEventListener("online", () => window.setTimeout(recover, 800));
+    window.addEventListener("pageshow", recover);
     document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") recover();
       if (document.visibilityState === "visible" && !state.account) {
         const tokens = getTokens();
         if (tokens.accessToken || tokens.refreshToken) {
