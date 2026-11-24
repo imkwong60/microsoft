@@ -410,11 +410,15 @@
     $("#refreshButton").classList.toggle("is-loading", show);
   }
 
+  let loadSeq = 0;
+  const delay = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
   async function loadFiles(options = {}) {
     if (!state.account) {
       renderFiles();
       return;
     }
+    const seq = ++loadSeq;
     if (!navigator.onLine || options.cachedOnly) {
       const cached = readCachedItems(state.folderId);
       if (cached) {
@@ -435,9 +439,18 @@
       const q = `'${parent}' in parents and trashed = false`;
       const fields = "files(id,name,mimeType,size,modifiedTime,webViewLink,iconLink,thumbnailLink,parents)";
       const path = `files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent(fields)}&pageSize=200&orderBy=folder,name`;
-      const response = await driveRequest(path);
-      const data = await response.json();
-      // Normalize to similar shape as OneDrive for UI reuse
+      let data;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const response = await driveRequest(path);
+          data = await response.json();
+          break;
+        } catch (err) {
+          if (attempt >= 1) throw err;
+          await delay(700); // 登入後第一次請求偶爾失敗，自動重試一次
+        }
+      }
+      if (seq !== loadSeq) return; // 已有較新的載入請求，丟棄這次結果
       state.items = (Array.isArray(data.files) ? data.files : []).map((f) => ({
         id: f.id,
         name: f.name,
@@ -453,6 +466,7 @@
       cacheItems(state.items, state.folderId);
       renderFiles();
     } catch (error) {
+      if (seq !== loadSeq) return;
       console.error("讀取 Google Drive 檔案失敗:", error);
       const cached = readCachedItems(state.folderId);
       if (cached) {
@@ -465,8 +479,10 @@
         showToast(error.message || "讀取 Google Drive 檔案失敗。", "error", 4000);
       }
     } finally {
-      showLoading(false);
-      renderFiles();
+      if (seq === loadSeq) {
+        showLoading(false);
+        renderFiles();
+      }
     }
   }
 
@@ -1050,29 +1066,57 @@
     $("#onlineLabel").textContent = online ? "線上" : "離線";
   }
 
-  async function showAccount(account) {
-    state.account = account;
-    const displayName = account.displayName || account.email || "Google 帳戶";
+  const PROFILE_KEY = "gdrive.profile";
+
+  function readProfile() {
+    try { return JSON.parse(localStorage.getItem(PROFILE_KEY) || "null"); } catch (_) { return null; }
+  }
+
+  function applyProfile(profile) {
+    const displayName = profile.displayName || profile.email || "Google 帳戶";
+    state.account = { displayName, email: profile.email || "", picture: profile.picture || "" };
+    const initial = displayName.trim().charAt(0).toUpperCase() || "G";
     $("#accountName").textContent = displayName;
-    $("#accountEmail").textContent = account.email || "Google Drive";
-    $("#accountAvatar").textContent = displayName.trim().charAt(0).toUpperCase();
-    renderFiles();
+    $("#accountEmail").textContent = profile.email || "已登入 Google Drive";
+    $("#accountAvatar").textContent = initial;
+    $("#chipAvatar").textContent = initial;
+    $("#chipStatus").textContent = "已登入";
+    $("#chipEmail").textContent = profile.email || displayName;
+    $("#accountChip").classList.add("signed-in");
+    $("#accountChip").title = "已登入：" + (profile.email || displayName);
+  }
+
+  function clearProfileUI() {
+    $("#accountName").textContent = "尚未登入";
+    $("#accountEmail").textContent = "連結 Google 帳戶";
+    $("#accountAvatar").textContent = "?";
+    $("#chipAvatar").textContent = "?";
+    $("#chipStatus").textContent = "尚未登入";
+    $("#chipEmail").textContent = "—";
+    $("#accountChip").classList.remove("signed-in");
+    $("#accountChip").title = "尚未登入";
+  }
+
+  async function fetchProfile() {
     try {
-      // Prefer userinfo endpoint
       const response = await driveRequest("https://www.googleapis.com/oauth2/v3/userinfo");
       const profile = await response.json();
-      state.account = {
-        displayName: profile.name || profile.email,
-        email: profile.email,
-        picture: profile.picture
-      };
-      $("#accountName").textContent = state.account.displayName;
-      $("#accountEmail").textContent = state.account.email || "Google Drive";
-      $("#accountAvatar").textContent = (state.account.displayName || "?").trim().charAt(0).toUpperCase();
+      const saved = { displayName: profile.name || profile.email, email: profile.email, picture: profile.picture };
+      try { localStorage.setItem(PROFILE_KEY, JSON.stringify(saved)); } catch (_) {}
+      if (state.account) applyProfile(saved);
     } catch (error) {
       console.warn("無法載入 Google 帳戶資料:", error);
     }
+  }
+
+  async function showAccount(account) {
+    // 先用快取的帳戶資料立即顯示登入狀態與 email
+    applyProfile(readProfile() || account);
+    renderFiles();
+    // 帳戶資料與檔案清單同時載入，不再讓檔案等待帳戶資料
+    const profileTask = fetchProfile();
     await loadFiles();
+    await profileTask;
     await uploadQueuedItems();
   }
 
@@ -1084,15 +1128,47 @@
     await showAccount({ displayName: "Google 帳戶" });
   }
 
+  function confirmSignOut() {
+    if ($("#signOutModal")) return;
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop open";
+    backdrop.id = "signOutModal";
+    backdrop.setAttribute("aria-hidden", "false");
+    backdrop.innerHTML = '<section class="modal glass signout-modal" role="dialog" aria-modal="true" aria-labelledby="signOutTitle">' +
+      '<h2 id="signOutTitle">要登出 Google 帳戶嗎？</h2>' +
+      '<p class="modal-description" id="signOutDesc"></p>' +
+      '<div class="modal-actions"><button class="button button-quiet" type="button" data-act="cancel">保持登入</button>' +
+      '<button class="button button-danger" type="button" data-act="ok">登出</button></div></section>';
+    backdrop.querySelector("#signOutDesc").textContent =
+      "目前登入：" + ((state.account && (state.account.email || state.account.displayName)) || "Google 帳戶") +
+      "。登出後需要重新登入才能存取檔案。";
+    const close = () => {
+      backdrop.remove();
+      document.removeEventListener("keydown", onKey, true);
+      if (!$(".modal-backdrop.open")) document.body.classList.remove("modal-open");
+    };
+    const onKey = (event) => { if (event.key === "Escape") close(); };
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) { close(); return; }
+      const act = event.target.closest("[data-act]");
+      if (!act) return;
+      if (act.dataset.act === "ok") signOut();
+      close();
+    });
+    document.addEventListener("keydown", onKey, true);
+    document.body.classList.add("modal-open");
+    document.body.append(backdrop);
+    backdrop.querySelector('[data-act="cancel"]').focus();
+  }
+
   async function signOut() {
     clearTokens();
+    try { localStorage.removeItem(PROFILE_KEY); } catch (_) {}
     state.account = null;
     state.items = [];
     state.folderId = null;
     state.folderName = "";
-    $("#accountName").textContent = "尚未登入";
-    $("#accountEmail").textContent = "連結 Google 帳戶";
-    $("#accountAvatar").textContent = "?";
+    clearProfileUI();
     renderFiles();
     showToast("已從此裝置登出 Google 帳戶。", "info");
   }
@@ -1134,11 +1210,12 @@
       }
       completeExternalSignIn();
     });
-    $("#accountButton").addEventListener("click", () => state.account ? signOut() : signIn());
+    $("#accountButton").addEventListener("click", () => state.account ? confirmSignOut() : signIn());
     $("#mobileAccountButton").addEventListener("click", () => {
       document.body.classList.remove("sidebar-open");
-      state.account ? signOut() : signIn();
+      state.account ? confirmSignOut() : signIn();
     });
+    $("#accountChip").addEventListener("click", () => state.account ? confirmSignOut() : signIn());
     $("#emptyAction").addEventListener("click", () => state.account ? openUploadModal() : signIn());
     $("#topUploadButton").addEventListener("click", openUploadModal);
     $("#mobileUploadButton").addEventListener("click", openUploadModal);
