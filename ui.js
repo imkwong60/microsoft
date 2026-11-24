@@ -5,7 +5,9 @@
   const TOKEN_KEY = "onedrive.oauth.tokens";
   const SESSION_TOKEN_KEY = "onedrive.oauth.tokens";
   const QUEUE_DB = "onedrive-offline-queue";
-  const MAX_SIMPLE_UPLOAD = 250 * 1024 * 1024;
+  const SIMPLE_UPLOAD_LIMIT = 250 * 1024 * 1024;
+  const UPLOAD_CHUNK_SIZE = 10 * 1024 * 1024;
+  const UPLOAD_RETRY_LIMIT = 3;
   const state = {
     account: null,
     items: [],
@@ -16,7 +18,11 @@
     view: "all",
     sortAscending: true,
     isLoading: false,
-    isUploading: false
+    isUploading: false,
+    uploadingFromModal: false,
+    previewItem: null,
+    previewUrl: null,
+    previewRequestId: 0
   };
   const $ = (selector) => document.querySelector(selector);
   const elements = {
@@ -40,6 +46,15 @@
     selectedFiles: $("#selectedFiles"),
     confirmUploadButton: $("#confirmUploadButton"),
     dropzone: $("#dropzone"),
+    uploadProgress: $("#uploadProgress"),
+    uploadProgressName: $("#uploadProgressName"),
+    uploadProgressPercent: $("#uploadProgressPercent"),
+    uploadProgressBar: $("#uploadProgressBar"),
+    uploadProgressDetail: $("#uploadProgressDetail"),
+    imagePreviewModal: $("#imagePreviewModal"),
+    previewImage: $("#previewImage"),
+    previewSpinner: $("#previewSpinner"),
+    previewCaption: $("#previewCaption"),
     toastRegion: $("#toastRegion")
   };
   let selectedFiles = [];
@@ -418,6 +433,12 @@
     return { type: "generic", svg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 4v4h4"/></svg>' };
   }
 
+  function isImageFile(item) {
+    const mimeType = item.file && item.file.mimeType ? item.file.mimeType : "";
+    const extension = (item.name || "").split(".").pop().toLowerCase();
+    return mimeType.startsWith("image/") || ["jpg", "jpeg", "png", "gif", "webp", "svg", "heic", "bmp", "tif", "tiff"].includes(extension);
+  }
+
   function createFileCard(item, index, pending = false) {
     const card = document.createElement("article");
     const icon = iconFor(item);
@@ -425,10 +446,13 @@
     const details = document.createElement("span");
     const name = document.createElement("span");
     const meta = document.createElement("span");
-    card.className = "file-card" + (item.folder ? " folder-card" : "") + (pending ? " pending-card" : "");
+    card.className = "file-card" + (item.folder ? " folder-card" : "") + (pending ? " pending-card" : "") + (!pending && isImageFile(item) ? " image-card" : "");
     card.style.animationDelay = Math.min(index * 28, 240) + "ms";
     card.setAttribute("aria-label", item.name + (item.folder ? "，資料夾" : ""));
-    if (!pending) card.dataset.itemId = item.id;
+    if (!pending) {
+      card.dataset.itemId = item.id;
+      if (isImageFile(item)) card.title = "點擊預覽相片";
+    }
     iconWrap.className = "file-icon " + icon.type;
     iconWrap.innerHTML = icon.svg;
     details.className = "file-details";
@@ -437,7 +461,7 @@
     meta.className = "file-meta";
     meta.textContent = pending
       ? "等待上傳 · " + formatBytes(item.size)
-      : (item.folder ? "資料夾" : formatBytes(item.size)) + " · " + formatDate(item.lastModifiedDateTime);
+      : (item.folder ? "資料夾" : (isImageFile(item) ? "點擊預覽 · " : "") + formatBytes(item.size)) + " · " + formatDate(item.lastModifiedDateTime);
     details.append(name, meta);
     card.append(iconWrap, details);
 
@@ -479,7 +503,8 @@
         elements.breadcrumbCurrent.textContent = item.name;
         loadFiles();
       } else {
-        downloadFile(item);
+        if (isImageFile(item)) openImagePreview(item);
+        else downloadFile(item);
       }
     });
     return card;
@@ -525,7 +550,9 @@
     elements.fileGrid.hidden = state.isLoading;
     elements.fileSummary.textContent = state.account
       ? (files.length + pendingHere.length) + " 個項目" + (pendingHere.length ? " · " + pendingHere.length + " 項待上傳" : "")
-      : "連結帳戶以開始使用";
+      : pendingHere.length
+        ? pendingHere.length + " 個檔案等待登入後上傳"
+        : "連結帳戶以開始使用";
     elements.fileCount.textContent = String(state.items.length);
     elements.allTabCount.textContent = String(state.items.length);
     elements.overviewFiles.textContent = String(state.items.length + pendingHere.length);
@@ -577,6 +604,257 @@
     }
   }
 
+  async function openImagePreview(item) {
+    if (!navigator.onLine || !state.account) {
+      showToast("相片預覽需要連線至 OneDrive。", "info");
+      return;
+    }
+    state.previewItem = item;
+    const requestId = ++state.previewRequestId;
+    if (state.previewUrl) {
+      URL.revokeObjectURL(state.previewUrl);
+      state.previewUrl = null;
+    }
+    elements.previewImage.removeAttribute("src");
+    $("#previewTitle").textContent = item.name;
+    elements.previewCaption.textContent = formatBytes(item.size) + " · " + formatDate(item.lastModifiedDateTime);
+    elements.previewImage.hidden = true;
+    elements.previewSpinner.hidden = false;
+    elements.imagePreviewModal.classList.add("open");
+    elements.imagePreviewModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("modal-open");
+    try {
+      const itemPath = "me/drive/items/" + encodeURIComponent(item.id);
+      let response;
+      try {
+        response = await graphRequest(itemPath + "/thumbnails/0/medium/content");
+      } catch (error) {
+        response = await graphRequest(itemPath + "/content");
+      }
+      let blob = await response.blob();
+      if (!blob.type.startsWith("image/")) {
+        response = await graphRequest(itemPath + "/content");
+        blob = await response.blob();
+      }
+      if (!blob.type.startsWith("image/")) throw new Error("OneDrive 沒有回傳可預覽的相片格式。");
+      if (requestId !== state.previewRequestId) return;
+      state.previewUrl = URL.createObjectURL(blob);
+      elements.previewImage.alt = item.name;
+      elements.previewImage.onload = () => { elements.previewSpinner.hidden = true; };
+      elements.previewImage.onerror = () => {
+        elements.previewSpinner.hidden = true;
+        elements.previewCaption.textContent = "此圖片格式無法在目前的瀏覽器中預覽。";
+      };
+      elements.previewImage.src = state.previewUrl;
+      elements.previewImage.hidden = false;
+    } catch (error) {
+      console.error("載入相片預覽失敗:", error);
+      if (requestId === state.previewRequestId) {
+        elements.previewSpinner.hidden = true;
+        elements.previewCaption.textContent = error.message || "相片預覽載入失敗。";
+        showToast("無法預覽「" + item.name + "」。", "error");
+      }
+    }
+  }
+
+  function closeImagePreview(clearItem = true) {
+    state.previewRequestId += 1;
+    elements.imagePreviewModal.classList.remove("open");
+    elements.imagePreviewModal.setAttribute("aria-hidden", "true");
+    if (state.previewUrl) {
+      URL.revokeObjectURL(state.previewUrl);
+      state.previewUrl = null;
+    }
+    elements.previewImage.removeAttribute("src");
+    elements.previewImage.hidden = true;
+    elements.previewSpinner.hidden = false;
+    if (clearItem) state.previewItem = null;
+    if (!elements.uploadModal.classList.contains("open")) document.body.classList.remove("modal-open");
+  }
+
+  function updateUploadProgress(fileName, percent, detail) {
+    if (!elements.uploadModal.classList.contains("open")) return;
+    const value = Math.max(0, Math.min(100, Math.round(percent)));
+    elements.uploadProgress.hidden = false;
+    elements.uploadProgressName.textContent = fileName;
+    elements.uploadProgressPercent.textContent = value + "%";
+    elements.uploadProgressBar.value = value;
+    elements.uploadProgressDetail.textContent = detail;
+  }
+
+  function setUploadControlsDisabled(disabled) {
+    elements.confirmUploadButton.disabled = disabled || selectedFiles.length === 0;
+    $("#closeModalButton").disabled = disabled;
+    $("#cancelUploadButton").disabled = disabled;
+    elements.dropzone.disabled = disabled;
+    elements.dropzone.setAttribute("aria-disabled", String(disabled));
+  }
+
+  async function createUploadSession(file, folderId) {
+    const encodedName = encodeURIComponent(file.name);
+    const path = folderId
+      ? "me/drive/items/" + encodeURIComponent(folderId) + ":/" + encodedName + ":/createUploadSession"
+      : "me/drive/root:/" + encodedName + ":/createUploadSession";
+    const response = await graphRequest(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        item: {
+          "@microsoft.graph.conflictBehavior": "rename",
+          name: file.name
+        }
+      })
+    });
+    const session = await response.json();
+    if (!session.uploadUrl) throw new Error("OneDrive 沒有回傳分段上傳網址。");
+    return session.uploadUrl;
+  }
+
+  function expectedOffset(session) {
+    const range = session.nextExpectedRanges && session.nextExpectedRanges[0];
+    if (!range) return null;
+    const offset = Number.parseInt(range.split("-")[0], 10);
+    return Number.isFinite(offset) ? offset : null;
+  }
+
+  async function getUploadSessionOffset(uploadUrl) {
+    const response = await fetch(uploadUrl);
+    if (!response.ok) {
+      throw new Error(response.status === 404 || response.status === 410
+        ? "OneDrive 上傳工作階段已過期，請重新選取檔案上傳。"
+        : "無法恢復 OneDrive 上傳工作階段（" + response.status + "）。");
+    }
+    const session = await response.json();
+    return expectedOffset(session);
+  }
+
+  async function uploadLargeFile(file, folderId, onProgress) {
+    const uploadUrl = await createUploadSession(file, folderId);
+    let offset = 0;
+    while (offset < file.size) {
+      const end = Math.min(offset + UPLOAD_CHUNK_SIZE, file.size);
+      let attempts = 0;
+      while (true) {
+        try {
+          const response = await fetch(uploadUrl, {
+            method: "PUT",
+            headers: { "Content-Range": "bytes " + offset + "-" + (end - 1) + "/" + file.size },
+            body: file.slice(offset, end)
+          });
+          if (response.status === 202) {
+            const session = await response.json();
+            offset = expectedOffset(session);
+            if (offset === null) offset = end;
+            onProgress(offset);
+            break;
+          }
+          if (response.ok) {
+            onProgress(file.size);
+            return response.status === 204 ? null : response.json().catch(() => null);
+          }
+          let message = "OneDrive 分段上傳失敗（" + response.status + "）";
+          try {
+            const payload = await response.json();
+            if (payload.error && payload.error.message) message = payload.error.message;
+          } catch (error) {
+            console.warn("無法解析分段上傳錯誤:", error);
+          }
+          if (response.status === 404 || response.status === 410) throw new Error("OneDrive 上傳工作階段已過期，請重新選取檔案上傳。");
+          throw new Error(message);
+        } catch (error) {
+          if (error.message.includes("工作階段已過期")) throw error;
+          if (!navigator.onLine) throw new Error("網路中斷；目前檔案的分段上傳未完成，請連線後重新選取檔案再試。");
+          attempts += 1;
+          if (attempts > UPLOAD_RETRY_LIMIT) throw error;
+          updateUploadProgress(file.name, offset / file.size * 100, "連線中斷，正在嘗試恢復第 " + (attempts) + " 次…");
+          await new Promise((resolve) => window.setTimeout(resolve, attempts * 900));
+          try {
+            const serverOffset = await getUploadSessionOffset(uploadUrl);
+            if (serverOffset !== null) {
+              offset = serverOffset;
+              onProgress(offset);
+              if (offset >= file.size) return null;
+              if (offset >= end) break;
+            }
+          } catch (resumeError) {
+            if (resumeError.message.includes("工作階段已過期")) throw resumeError;
+            if (attempts >= UPLOAD_RETRY_LIMIT) throw resumeError;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  async function uploadFile(file, folderId, onProgress) {
+    if (file.size > SIMPLE_UPLOAD_LIMIT) {
+      return uploadLargeFile(file, folderId, (uploadedBytes) => {
+        onProgress(uploadedBytes / file.size * 100, formatBytes(uploadedBytes) + " / " + formatBytes(file.size));
+      });
+    }
+    const encodedName = encodeURIComponent(file.name);
+    const path = folderId
+      ? "me/drive/items/" + encodeURIComponent(folderId) + ":/" + encodedName + ":/content"
+      : "me/drive/root:/" + encodedName + ":/content";
+    const response = await graphRequest(path, {
+      method: "PUT",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file
+    });
+    onProgress(100, formatBytes(file.size) + " / " + formatBytes(file.size));
+    return response.json().catch(() => null);
+  }
+
+  async function uploadSelectedFiles(files) {
+    if (state.isUploading) {
+      showToast("另一個檔案仍在上傳，請完成後再開始。", "info");
+      return;
+    }
+    state.isUploading = true;
+    state.uploadingFromModal = true;
+    setUploadControlsDisabled(true);
+    let completed = 0;
+    const failed = [];
+    try {
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        try {
+          updateUploadProgress(file.name, 0, "正在建立安全的 OneDrive 上傳工作階段…");
+          await uploadFile(file, state.folderId, (percent, detail) => {
+            const totalPercent = ((index + percent / 100) / files.length) * 100;
+            updateUploadProgress(file.name, totalPercent, detail);
+          });
+          completed += 1;
+          selectedFiles = selectedFiles.filter((selected) => selected !== file);
+          renderSelectedFiles();
+          showToast("「" + file.name + "」已上傳至 OneDrive。");
+        } catch (error) {
+          console.error("上傳檔案失敗:", file.name, error);
+          failed.push(file);
+          showToast("「" + file.name + "」上傳失敗：" + error.message, "error", 5000);
+        }
+      }
+      selectedFiles = failed;
+      renderSelectedFiles();
+      if (completed > 0) await loadFiles();
+      if (failed.length === 0) {
+        updateUploadProgress("上傳完成", 100, "所有檔案已安全儲存至 OneDrive。");
+        window.setTimeout(() => {
+          if (!state.uploadingFromModal) elements.uploadProgress.hidden = true;
+        }, 1200);
+        state.uploadingFromModal = false;
+        closeUploadModal();
+      } else {
+        elements.uploadProgress.hidden = true;
+      }
+    } finally {
+      state.isUploading = false;
+      state.uploadingFromModal = false;
+      setUploadControlsDisabled(false);
+      renderSelectedFiles();
+    }
+  }
+
   async function uploadQueuedItems() {
     if (state.isUploading || !navigator.onLine || !state.account) return;
     state.isUploading = true;
@@ -585,19 +863,17 @@
       state.pending = queued;
       renderFiles();
       for (const upload of queued) {
-        if (upload.size > MAX_SIMPLE_UPLOAD) {
-          showToast("「" + upload.name + "」超過單次上傳上限 250 MB，請縮小檔案後重試。", "error", 4500);
-          continue;
-        }
         try {
-          const encodedName = encodeURIComponent(upload.name);
-          const path = upload.folderId
-            ? "me/drive/items/" + encodeURIComponent(upload.folderId) + ":/" + encodedName + ":/content"
-            : "me/drive/root:/" + encodedName + ":/content";
-          await graphRequest(path, {
-            method: "PUT",
-            headers: { "Content-Type": upload.type || "application/octet-stream" },
-            body: upload.blob
+          const queuedBlob = upload.blob;
+          const queuedFile = queuedBlob.name
+            ? queuedBlob
+            : new File([queuedBlob], upload.name, {
+              type: upload.type || "application/octet-stream",
+              lastModified: upload.lastModified || upload.queuedAt
+            });
+          await uploadFile(queuedFile, upload.folderId, (percent, detail) => {
+            elements.overviewSync.textContent = "上傳 " + Math.round(percent) + "%";
+            elements.overviewSyncCaption.textContent = detail;
           });
           await removeQueuedUpload(upload.id);
           state.pending = state.pending.filter((file) => file.id !== upload.id);
@@ -621,13 +897,18 @@
 
   async function addFilesToQueue(files) {
     if (!files.length) return;
+    const hasLargeFile = files.some((file) => file.size > SIMPLE_UPLOAD_LIMIT);
+    if (hasLargeFile && (!state.account || !navigator.onLine)) {
+      showToast("大檔案需先登入 Microsoft 帳戶並保持網路連線，才能分段上傳。", "error", 4500);
+      return;
+    }
+    if (state.account && navigator.onLine) {
+      await uploadSelectedFiles(files);
+      return;
+    }
     try {
       let addedCount = 0;
       for (const file of files) {
-        if (file.size > MAX_SIMPLE_UPLOAD) {
-          showToast("「" + file.name + "」超過目前支援的 250 MB 上傳上限。", "error", 4000);
-          continue;
-        }
         await addQueuedUpload(file, state.folderId);
         addedCount += 1;
       }
@@ -652,7 +933,9 @@
   function openUploadModal() {
     selectedFiles = [];
     elements.filePicker.value = "";
+    elements.uploadProgress.hidden = true;
     renderSelectedFiles();
+    setUploadControlsDisabled(false);
     elements.uploadModal.classList.add("open");
     elements.uploadModal.setAttribute("aria-hidden", "false");
     document.body.classList.add("modal-open");
@@ -660,6 +943,7 @@
   }
 
   function closeUploadModal() {
+    if (state.uploadingFromModal) return;
     elements.uploadModal.classList.remove("open");
     elements.uploadModal.setAttribute("aria-hidden", "true");
     document.body.classList.remove("modal-open");
@@ -668,7 +952,7 @@
   function renderSelectedFiles() {
     elements.selectedFiles.replaceChildren();
     elements.selectedFiles.hidden = selectedFiles.length === 0;
-    elements.confirmUploadButton.disabled = selectedFiles.length === 0;
+    elements.confirmUploadButton.disabled = state.uploadingFromModal || selectedFiles.length === 0;
     selectedFiles.forEach((file) => {
       const row = document.createElement("div");
       const fileName = document.createElement("span");
@@ -800,6 +1084,13 @@
     elements.uploadModal.addEventListener("click", (event) => {
       if (event.target === elements.uploadModal) closeUploadModal();
     });
+    $("#closePreviewButton").addEventListener("click", () => closeImagePreview());
+    $("#previewDownloadButton").addEventListener("click", () => {
+      if (state.previewItem) downloadFile(state.previewItem);
+    });
+    elements.imagePreviewModal.addEventListener("click", (event) => {
+      if (event.target === elements.imagePreviewModal) closeImagePreview();
+    });
     elements.dropzone.addEventListener("dragover", (event) => {
       event.preventDefault();
       elements.dropzone.classList.add("drag-over");
@@ -814,6 +1105,7 @@
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         closeUploadModal();
+        closeImagePreview();
         document.body.classList.remove("sidebar-open");
       }
       if (event.key === "/" && !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) {
@@ -837,6 +1129,8 @@
   async function initialize() {
     bindEvents();
     updateConnection();
+    const sharedFiles = new URLSearchParams(window.location.search).get("shared") === "1";
+    if (sharedFiles) window.history.replaceState({}, document.title, window.location.pathname + window.location.hash);
     try {
       const completedLogin = await exchangeAuthorizationCode();
       if (completedLogin) showToast("Microsoft 帳戶已成功連結。");
@@ -851,6 +1145,11 @@
       showToast("無法讀取本機離線佇列：" + error.message, "error", 4000);
     }
     const tokens = getTokens();
+    if (sharedFiles) {
+      showToast(tokens.accessToken || tokens.refreshToken
+        ? "已收到分享檔案，正在準備上傳至 OneDrive。"
+        : "已收到分享檔案；登入後會上傳至 OneDrive。", "info", 3500);
+    }
     if (tokens.accessToken || tokens.refreshToken) {
       await showAccount({ displayName: "Microsoft 帳戶" });
     } else {
