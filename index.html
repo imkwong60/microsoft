@@ -143,21 +143,36 @@
   </div>
   <button class="mobile-fab button button-primary" id="mobileUploadButton" type="button" aria-label="上傳檔案"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg></button>
 
-  <input id="filePicker" type="file" multiple hidden>
+  <input id="filePicker" type="file" accept="image/*,video/*,*/*" multiple hidden>
   <div class="modal-backdrop" id="uploadModal" aria-hidden="true">
     <section class="modal glass" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <button class="modal-close icon-button" id="closeModalButton" type="button" aria-label="關閉視窗"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
       <div class="modal-kicker"><span class="modal-kicker-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg></span>安全上傳</div>
       <h2 id="modalTitle">新增至雲端</h2>
-      <p class="modal-description">選擇檔案上傳至目前的 OneDrive 資料夾。離線時會先安全保存在此裝置。</p>
+      <p class="modal-description">支援大檔案分段續傳。已登入且在線時直接上傳；小檔案也可離線暫存，恢復連線後同步。</p>
       <button class="dropzone" id="dropzone" type="button">
         <span class="dropzone-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg></span>
         <strong>點擊選取，或拖曳檔案到這裡</strong>
         <span>支援任意檔案類型</span>
       </button>
+      <p class="share-help">iPhone/iPad 的 Safari 尚不支援 PWA 從分享選單接收檔案；請在此選取照片或影片。</p>
       <div class="selected-files" id="selectedFiles" hidden></div>
+      <div class="upload-progress" id="uploadProgress" hidden aria-live="polite">
+        <div class="progress-label"><span id="uploadProgressName">準備上傳</span><span id="uploadProgressPercent">0%</span></div>
+        <progress id="uploadProgressBar" max="100" value="0">0%</progress>
+        <span class="progress-detail" id="uploadProgressDetail">連線至 OneDrive…</span>
+      </div>
       <div class="modal-actions"><button class="button button-quiet" id="cancelUploadButton" type="button">取消</button><button class="button button-primary" id="confirmUploadButton" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4 4 4M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg><span>開始上傳</span></button></div>
       <p class="modal-footnote"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3"/></svg>傳輸由 Microsoft OneDrive 保護</p>
+    </section>
+  </div>
+  <div class="modal-backdrop preview-backdrop" id="imagePreviewModal" aria-hidden="true">
+    <section class="preview-modal glass" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
+      <button class="modal-close icon-button" id="closePreviewButton" type="button" aria-label="關閉預覽"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+      <h2 id="previewTitle">相片預覽</h2>
+      <div class="preview-stage"><span class="spinner" id="previewSpinner"></span><img id="previewImage" alt="" hidden></div>
+      <p class="preview-caption" id="previewCaption"></p>
+      <div class="preview-actions"><button class="button button-quiet" id="previewDownloadButton" type="button">下載相片</button></div>
     </section>
   </div>
   <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="false"></div>
